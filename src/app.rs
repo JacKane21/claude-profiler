@@ -1,9 +1,10 @@
 use ratatui::widgets::ListState;
+use std::collections::HashMap;
 use tui_input::Input;
 
 use crate::config::{
     Config, ENV_AUTH_TOKEN, ENV_BASE_URL, ENV_DEFAULT_HAIKU_MODEL, ENV_DEFAULT_OPUS_MODEL,
-    ENV_DEFAULT_SONNET_MODEL, Profile,
+    ENV_DEFAULT_SONNET_MODEL, ENV_MODEL, Profile,
 };
 
 /// Possible application actions from user input
@@ -19,6 +20,9 @@ pub enum Action {
     SaveEdit,
     CancelEdit,
     ResetConfig,
+    SelectLMStudio,
+    OpenLMStudio,
+    BackToProfiles,
 }
 
 /// Current application mode
@@ -31,6 +35,7 @@ pub enum AppMode {
         /// Index into edit fields (see EDIT_FIELD_* constants)
         focused_field: usize,
     },
+    LMStudioModelSelection,
 }
 
 pub const EDIT_FIELD_API_KEY: usize = 0;
@@ -54,7 +59,7 @@ pub struct App {
     /// Whether the app should exit
     pub should_quit: bool,
 
-    /// Selected profile to launch (set when user confirms selection)
+    /// Selected profile to launch (set when the user confirms selection)
     pub selected_profile: Option<Profile>,
 
     /// Status message to display (errors, confirmations)
@@ -77,6 +82,12 @@ pub struct App {
 
     /// Whether to reveal the API key in the edit form
     pub reveal_api_key: bool,
+
+    /// List of models from LMStudio
+    pub lmstudio_models: Vec<String>,
+
+    /// Selection state for LMStudio models
+    pub lmstudio_list_state: ListState,
 }
 
 fn env_value(profile: &Profile, key: &str) -> String {
@@ -102,6 +113,8 @@ impl App {
             sonnet_model_input: Input::default(),
             opus_model_input: Input::default(),
             reveal_api_key: false,
+            lmstudio_models: Vec::new(),
+            lmstudio_list_state: ListState::default(),
         }
     }
 
@@ -124,8 +137,57 @@ impl App {
 
     /// Confirm selection and prepare to launch
     pub fn select_current(&mut self) {
-        if let Some(profile) = self.current_profile() {
-            self.selected_profile = Some(profile.clone());
+        match &self.mode {
+            AppMode::LMStudioModelSelection => {
+                if let Some(i) = self.lmstudio_list_state.selected() {
+                    if let Some(model_name) = self.lmstudio_models.get(i).cloned() {
+                        // Create the environment for the selected LMStudio model
+                        let mut env = HashMap::new();
+                        env.insert(
+                            ENV_BASE_URL.to_string(),
+                            "http://localhost:1234/v1".to_string(),
+                        );
+                        env.insert(ENV_AUTH_TOKEN.to_string(), "lmstudio".to_string());
+
+                        // Set all models to the same LMStudio model
+                        env.insert(ENV_DEFAULT_HAIKU_MODEL.to_string(), model_name.clone());
+                        env.insert(ENV_DEFAULT_SONNET_MODEL.to_string(), model_name.clone());
+                        env.insert(ENV_DEFAULT_OPUS_MODEL.to_string(), model_name.clone());
+                        env.insert(ENV_MODEL.to_string(), model_name.clone());
+
+                        // Update the "lmstudio" profile in config
+                        if let Some(lmstudio_profile) =
+                            self.config.profiles.iter_mut().find(|p| p.name == "lmstudio")
+                        {
+                            lmstudio_profile.env = env;
+                            lmstudio_profile.description =
+                                format!("LMStudio model: {}", model_name);
+
+                            if let Err(e) = self.config.save() {
+                                self.status_message = Some(format!("Failed to save config: {}", e));
+                            } else {
+                                self.status_message = Some(format!(
+                                    "Configured LMStudio with {}",
+                                    model_name
+                                ));
+                            }
+                        }
+
+                        self.mode = AppMode::Normal;
+                    }
+                }
+            }
+            AppMode::Normal => {
+                if let Some(profile) = self.current_profile() {
+                    if profile.name == "lmstudio" && profile.env.is_empty() {
+                        self.status_message =
+                            Some("Press 'l' to select an LMStudio model".to_string());
+                    } else {
+                        self.selected_profile = Some(profile.clone());
+                    }
+                }
+            }
+            _ => {}
         }
     }
 
@@ -214,17 +276,155 @@ impl App {
                     self.list_state.select(Some(default_index));
                 }
             }
+            Action::SelectLMStudio => {
+                self.fetch_lmstudio_models();
+            }
+            Action::OpenLMStudio => {
+                // Open LMStudio application
+                std::process::Command::new("open")
+                    .args(["-a", "LM Studio"])
+                    .spawn()
+                    .ok();
+                self.status_message = Some("Opening LMStudio...".to_string());
+            }
+            Action::BackToProfiles => {
+                self.mode = AppMode::Normal;
+            }
         }
     }
 
-    fn move_selection(&mut self, delta: isize) {
-        let len = self.config.profiles.len();
-        if len == 0 {
+    pub fn fetch_lmstudio_models(&mut self) {
+        self.status_message = Some("Fetching models from LMStudio...".to_string());
+        match crate::lmstudio::list_local_models() {
+            Ok(models) => {
+                self.set_lmstudio_models(models);
+                if self.lmstudio_models.is_empty() {
+                    self.status_message =
+                        Some("No models loaded. Press 'l' to open LMStudio.".to_string());
+                } else {
+                    self.status_message = None;
+                }
+            }
+            Err(_) => {
+                self.set_lmstudio_models(Vec::new());
+                self.status_message =
+                    Some("LMStudio server not running. Press 'l' to open LMStudio.".to_string());
+            }
+        }
+        // Always enter model selection mode so user can press 'l' to open LMStudio
+        self.mode = AppMode::LMStudioModelSelection;
+    }
+
+    fn set_lmstudio_models(&mut self, models: Vec<String>) {
+        let previous_selected_index = self.lmstudio_list_state.selected();
+        let previous_selected_model_id = previous_selected_index
+            .and_then(|i| self.lmstudio_models.get(i))
+            .cloned();
+
+        self.lmstudio_models = models;
+
+        if self.lmstudio_models.is_empty() {
+            self.lmstudio_list_state.select(None);
             return;
         }
 
-        let current = self.list_state.selected().unwrap_or(0) as isize;
-        let next = (current + delta).rem_euclid(len as isize) as usize;
-        self.list_state.select(Some(next));
+        if let Some(model_id) = previous_selected_model_id {
+            if let Some(index) = self.lmstudio_models.iter().position(|m| m == &model_id) {
+                self.lmstudio_list_state.select(Some(index));
+                return;
+            }
+        }
+
+        let fallback_index = previous_selected_index.unwrap_or(0);
+        let clamped = fallback_index.min(self.lmstudio_models.len() - 1);
+        self.lmstudio_list_state.select(Some(clamped));
+    }
+
+    fn move_selection(&mut self, delta: isize) {
+        match &mut self.mode {
+            AppMode::LMStudioModelSelection => {
+                let len = self.lmstudio_models.len();
+                if len == 0 {
+                    return;
+                }
+                let current = self.lmstudio_list_state.selected().unwrap_or(0) as isize;
+                let next = (current + delta).rem_euclid(len as isize) as usize;
+                self.lmstudio_list_state.select(Some(next));
+            }
+            _ => {
+                let len = self.config.profiles.len();
+                if len == 0 {
+                    return;
+                }
+                let current = self.list_state.selected().unwrap_or(0) as isize;
+                let next = (current + delta).rem_euclid(len as isize) as usize;
+                self.list_state.select(Some(next));
+            }
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn set_lmstudio_models_preserves_selection_by_model_id_when_possible() {
+        let mut app = App::new(Config::create_default());
+
+        app.lmstudio_models = vec!["a".into(), "b".into(), "c".into()];
+        app.lmstudio_list_state.select(Some(1));
+
+        app.set_lmstudio_models(vec!["a".into(), "b".into(), "c".into(), "d".into()]);
+
+        assert_eq!(app.lmstudio_list_state.selected(), Some(1));
+    }
+
+    #[test]
+    fn set_lmstudio_models_preserves_selection_when_list_is_reordered() {
+        let mut app = App::new(Config::create_default());
+
+        app.lmstudio_models = vec!["a".into(), "b".into(), "c".into()];
+        app.lmstudio_list_state.select(Some(1));
+
+        app.set_lmstudio_models(vec!["b".into(), "c".into(), "a".into()]);
+
+        assert_eq!(app.lmstudio_list_state.selected(), Some(0));
+    }
+
+    #[test]
+    fn set_lmstudio_models_falls_back_to_clamped_index_when_selected_model_disappears() {
+        let mut app = App::new(Config::create_default());
+
+        app.lmstudio_models = vec!["a".into(), "b".into(), "c".into()];
+        app.lmstudio_list_state.select(Some(2));
+
+        app.set_lmstudio_models(vec!["x".into()]);
+
+        assert_eq!(app.lmstudio_list_state.selected(), Some(0));
+    }
+
+    #[test]
+    fn set_lmstudio_models_selects_first_item_when_no_previous_selection() {
+        let mut app = App::new(Config::create_default());
+
+        app.lmstudio_models = vec!["a".into(), "b".into()];
+        app.lmstudio_list_state.select(None);
+
+        app.set_lmstudio_models(vec!["a".into(), "b".into(), "c".into()]);
+
+        assert_eq!(app.lmstudio_list_state.selected(), Some(0));
+    }
+
+    #[test]
+    fn set_lmstudio_models_clears_selection_when_list_becomes_empty() {
+        let mut app = App::new(Config::create_default());
+
+        app.lmstudio_models = vec!["a".into()];
+        app.lmstudio_list_state.select(Some(0));
+
+        app.set_lmstudio_models(Vec::new());
+
+        assert_eq!(app.lmstudio_list_state.selected(), None);
     }
 }

@@ -35,7 +35,14 @@ pub fn render(frame: &mut Frame, app: &mut App) {
         .split(frame.area());
 
     render_title(frame, chunks[0]);
-    render_profile_list(frame, app, chunks[1]);
+    match &app.mode {
+        AppMode::LMStudioModelSelection => {
+            render_lmstudio_model_list(frame, app, chunks[1]);
+        }
+        _ => {
+            render_profile_list(frame, app, chunks[1]);
+        }
+    }
     render_details(frame, app, chunks[2]);
     render_footer(frame, chunks[3], app);
 
@@ -117,26 +124,48 @@ fn render_footer(frame: &mut Frame, area: Rect, app: &App) {
             Span::raw(" (press any key to clear)"),
         ])
     } else {
-        Line::from(vec![
-            Span::styled("[", Style::default().fg(Color::DarkGray)),
-            Span::styled("^/v", Style::default().fg(Color::Cyan)),
-            Span::styled("] Navigate  ", Style::default().fg(Color::DarkGray)),
-            Span::styled("[", Style::default().fg(Color::DarkGray)),
-            Span::styled("Enter", Style::default().fg(Color::Cyan)),
-            Span::styled("] Launch  ", Style::default().fg(Color::DarkGray)),
-            Span::styled("[", Style::default().fg(Color::DarkGray)),
-            Span::styled("?", Style::default().fg(Color::Cyan)),
-            Span::styled("] Help  ", Style::default().fg(Color::DarkGray)),
-            Span::styled("[", Style::default().fg(Color::DarkGray)),
-            Span::styled("e", Style::default().fg(Color::Cyan)),
-            Span::styled("] Edit Profile  ", Style::default().fg(Color::DarkGray)),
-            Span::styled("[", Style::default().fg(Color::DarkGray)),
-            Span::styled("r", Style::default().fg(Color::Cyan)),
-            Span::styled("] Reset Config  ", Style::default().fg(Color::DarkGray)),
-            Span::styled("[", Style::default().fg(Color::DarkGray)),
-            Span::styled("q", Style::default().fg(Color::Cyan)),
-            Span::styled("] Quit", Style::default().fg(Color::DarkGray)),
-        ])
+        match app.mode {
+            AppMode::LMStudioModelSelection => Line::from(vec![
+                Span::styled("[", Style::default().fg(Color::DarkGray)),
+                Span::styled("^/v", Style::default().fg(Color::Cyan)),
+                Span::styled("] Navigate  ", Style::default().fg(Color::DarkGray)),
+                Span::styled("[", Style::default().fg(Color::DarkGray)),
+                Span::styled("Enter", Style::default().fg(Color::Cyan)),
+                Span::styled("] Select  ", Style::default().fg(Color::DarkGray)),
+                Span::styled("[", Style::default().fg(Color::DarkGray)),
+                Span::styled("r", Style::default().fg(Color::Cyan)),
+                Span::styled("] Refresh  ", Style::default().fg(Color::DarkGray)),
+                Span::styled("[", Style::default().fg(Color::DarkGray)),
+                Span::styled("l", Style::default().fg(Color::Cyan)),
+                Span::styled("] Open LMStudio  ", Style::default().fg(Color::DarkGray)),
+                Span::styled("[", Style::default().fg(Color::DarkGray)),
+                Span::styled("Esc", Style::default().fg(Color::Cyan)),
+                Span::styled("] Back", Style::default().fg(Color::DarkGray)),
+            ]),
+            _ => Line::from(vec![
+                Span::styled("[", Style::default().fg(Color::DarkGray)),
+                Span::styled("^/v", Style::default().fg(Color::Cyan)),
+                Span::styled("] Navigate  ", Style::default().fg(Color::DarkGray)),
+                Span::styled("[", Style::default().fg(Color::DarkGray)),
+                Span::styled("Enter", Style::default().fg(Color::Cyan)),
+                Span::styled("] Launch  ", Style::default().fg(Color::DarkGray)),
+                Span::styled("[", Style::default().fg(Color::DarkGray)),
+                Span::styled("?", Style::default().fg(Color::Cyan)),
+                Span::styled("] Help  ", Style::default().fg(Color::DarkGray)),
+                Span::styled("[", Style::default().fg(Color::DarkGray)),
+                Span::styled("e", Style::default().fg(Color::Cyan)),
+                Span::styled("] Edit Profile  ", Style::default().fg(Color::DarkGray)),
+                Span::styled("[", Style::default().fg(Color::DarkGray)),
+                Span::styled("r", Style::default().fg(Color::Cyan)),
+                Span::styled("] Reset Config  ", Style::default().fg(Color::DarkGray)),
+                Span::styled("[", Style::default().fg(Color::DarkGray)),
+                Span::styled("l", Style::default().fg(Color::Cyan)),
+                Span::styled("] LMStudio Models  ", Style::default().fg(Color::DarkGray)),
+                Span::styled("[", Style::default().fg(Color::DarkGray)),
+                Span::styled("q", Style::default().fg(Color::Cyan)),
+                Span::styled("] Quit", Style::default().fg(Color::DarkGray)),
+            ]),
+        }
     };
 
     let footer = Paragraph::new(footer_text).block(Block::default().borders(Borders::ALL));
@@ -287,4 +316,30 @@ fn mask_value(value: &str) -> String {
     } else {
         "****".to_string()
     }
+}
+
+fn render_lmstudio_model_list(frame: &mut Frame, app: &mut App, area: Rect) {
+    use ratatui::widgets::{List, ListItem};
+    use ratatui::style::Modifier;
+
+    let items: Vec<ListItem> = app
+        .lmstudio_models
+        .iter()
+        .map(|model| {
+            ListItem::new(Line::from(vec![
+                Span::styled(model, Style::default().add_modifier(Modifier::BOLD)),
+            ]))
+        })
+        .collect();
+
+    let list = List::new(items)
+        .block(Block::default().borders(Borders::ALL).title("LMStudio Models ([l] to open app)"))
+        .highlight_style(
+            Style::default()
+                .bg(Color::DarkGray)
+                .add_modifier(Modifier::BOLD),
+        )
+        .highlight_symbol(">> ");
+
+    frame.render_stateful_widget(list, area, &mut app.lmstudio_list_state);
 }

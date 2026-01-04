@@ -2,11 +2,13 @@ mod app;
 mod config;
 mod error;
 mod launcher;
+mod lmstudio;
 mod tui;
 mod ui;
 
 use anyhow::Result;
 use crossterm::event::{self, Event, KeyCode, KeyEventKind};
+use std::time::{Duration, Instant};
 
 use crate::app::{
     Action, App, AppMode, EDIT_FIELD_API_KEY, EDIT_FIELD_COUNT, EDIT_FIELD_HAIKU, EDIT_FIELD_OPUS,
@@ -65,10 +67,37 @@ fn main() -> Result<()> {
     Ok(())
 }
 
+const LMSTUDIO_POLL_INTERVAL: Duration = Duration::from_secs(3);
+const UI_POLL_GRANULARITY: Duration = Duration::from_millis(250);
+
 fn run_app(terminal: &mut tui::Tui, app: &mut App) -> Result<Option<Profile>> {
+    let mut next_lmstudio_poll_at = Instant::now() + LMSTUDIO_POLL_INTERVAL;
+
     loop {
         // Render
         terminal.draw(|frame| ui::render(frame, app))?;
+
+        let in_lmstudio = app.mode == AppMode::LMStudioModelSelection;
+        let now = Instant::now();
+
+        // Poll for events with a timeout (also enables periodic refresh while idle)
+        let poll_timeout = if in_lmstudio {
+            let until_refresh = next_lmstudio_poll_at
+                .checked_duration_since(now)
+                .unwrap_or(Duration::ZERO);
+            UI_POLL_GRANULARITY.min(until_refresh)
+        } else {
+            UI_POLL_GRANULARITY
+        };
+
+        if !event::poll(poll_timeout)? {
+            // Idle/tick path: do periodic work here
+            if in_lmstudio && Instant::now() >= next_lmstudio_poll_at {
+                app.fetch_lmstudio_models();
+                next_lmstudio_poll_at = Instant::now() + LMSTUDIO_POLL_INTERVAL;
+            }
+            continue;
+        }
 
         // Handle input
         match event::read()? {
@@ -89,6 +118,7 @@ fn run_app(terminal: &mut tui::Tui, app: &mut App) -> Result<Option<Profile>> {
                             KeyCode::Char('?') => Some(Action::ShowHelp),
                             KeyCode::Char('e') => Some(Action::EditProfile),
                             KeyCode::Char('r') => Some(Action::ResetConfig),
+                            KeyCode::Char('l') => Some(Action::SelectLMStudio),
                             _ => None,
                         },
                         AppMode::Help => Some(Action::HideHelp),
@@ -121,10 +151,26 @@ fn run_app(terminal: &mut tui::Tui, app: &mut App) -> Result<Option<Profile>> {
                                 None
                             }
                         },
+                        AppMode::LMStudioModelSelection => match key.code {
+                            KeyCode::Char('q') | KeyCode::Esc => Some(Action::BackToProfiles),
+                            KeyCode::Up | KeyCode::Char('k') => Some(Action::MoveUp),
+                            KeyCode::Down | KeyCode::Char('j') => Some(Action::MoveDown),
+                            KeyCode::Enter => Some(Action::SelectProfile),
+                            KeyCode::Char('l') => Some(Action::OpenLMStudio),
+                            KeyCode::Char('r') => {
+                                Some(Action::SelectLMStudio)
+                            }
+                            _ => None,
+                        },
                     };
 
                     if let Some(action) = action {
+                        let reset_lmstudio_poll_deadline = matches!(action, Action::SelectLMStudio);
                         app.handle_action(action);
+
+                        if reset_lmstudio_poll_deadline {
+                            next_lmstudio_poll_at = Instant::now() + LMSTUDIO_POLL_INTERVAL;
+                        }
                     }
 
                     if app.should_quit {
@@ -135,8 +181,6 @@ fn run_app(terminal: &mut tui::Tui, app: &mut App) -> Result<Option<Profile>> {
                         return Ok(Some(profile));
                     }
                 }
-
-                // Hold-to-reveal removed; toggle handled in EditProfile key handling.
             }
             _ => {}
         }

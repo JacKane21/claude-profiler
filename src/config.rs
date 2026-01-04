@@ -17,7 +17,7 @@ pub const ENV_API_TIMEOUT_MS: &str = "API_TIMEOUT_MS";
 /// A single profile configuration
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Profile {
-    /// Unique profile name (used as identifier)
+    /// Unique profile name (used as the identifier)
     pub name: String,
 
     /// Human-readable description
@@ -80,7 +80,7 @@ impl Config {
     pub fn save(&self) -> Result<()> {
         let config_dir = Self::config_dir().context("Could not determine config directory")?;
 
-        // Create directory if it doesn't exist
+        // Create the directory if it doesn't exist
         fs::create_dir_all(&config_dir).with_context(|| {
             format!(
                 "Failed to create config directory: {}",
@@ -164,6 +164,11 @@ impl Config {
                         ),
                         (ENV_API_TIMEOUT_MS.to_string(), "3000000".to_string()),
                     ]),
+                },
+                Profile {
+                    name: "lmstudio".to_string(),
+                    description: "Local models via LMStudio (press 'l' to select model)".to_string(),
+                    env: HashMap::new(),
                 },
             ],
         }

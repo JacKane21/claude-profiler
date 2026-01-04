@@ -68,6 +68,15 @@ pub fn render_help_popup(frame: &mut Frame, area: Rect) {
         ]),
         Line::from(vec![
             Span::styled(
+                "  l  ",
+                Style::default()
+                    .fg(Color::Cyan)
+                    .add_modifier(Modifier::BOLD),
+            ),
+            Span::raw("Select local LMStudio model"),
+        ]),
+        Line::from(vec![
+            Span::styled(
                 "  q/Esc  ",
                 Style::default()
                     .fg(Color::Cyan)
