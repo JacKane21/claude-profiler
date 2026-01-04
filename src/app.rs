@@ -1,7 +1,10 @@
 use ratatui::widgets::ListState;
 use tui_input::Input;
 
-use crate::config::{Config, Profile};
+use crate::config::{
+    Config, ENV_AUTH_TOKEN, ENV_BASE_URL, ENV_DEFAULT_HAIKU_MODEL, ENV_DEFAULT_OPUS_MODEL,
+    ENV_DEFAULT_SONNET_MODEL, Profile,
+};
 
 /// Possible application actions from user input
 #[derive(Debug, Clone, PartialEq)]
@@ -25,10 +28,17 @@ pub enum AppMode {
     Normal,
     Help,
     EditProfile {
-        /// 0 for API Key, 1 for URL, 2 for Haiku, 3 for Sonnet, 4 for Opus
+        /// Index into edit fields (see EDIT_FIELD_* constants)
         focused_field: usize,
     },
 }
+
+pub const EDIT_FIELD_API_KEY: usize = 0;
+pub const EDIT_FIELD_URL: usize = 1;
+pub const EDIT_FIELD_HAIKU: usize = 2;
+pub const EDIT_FIELD_SONNET: usize = 3;
+pub const EDIT_FIELD_OPUS: usize = 4;
+pub const EDIT_FIELD_COUNT: usize = 5;
 
 /// Main application state
 pub struct App {
@@ -69,6 +79,10 @@ pub struct App {
     pub reveal_api_key: bool,
 }
 
+fn env_value(profile: &Profile, key: &str) -> String {
+    profile.env.get(key).cloned().unwrap_or_default()
+}
+
 impl App {
     pub fn new(config: Config) -> Self {
         let default_index = config.default_profile_index();
@@ -93,40 +107,12 @@ impl App {
 
     /// Move selection up in the profile list
     pub fn previous(&mut self) {
-        if self.config.profiles.is_empty() {
-            return;
-        }
-
-        let i = match self.list_state.selected() {
-            Some(i) => {
-                if i == 0 {
-                    self.config.profiles.len() - 1
-                } else {
-                    i - 1
-                }
-            }
-            None => 0,
-        };
-        self.list_state.select(Some(i));
+        self.move_selection(-1);
     }
 
     /// Move selection down in the profile list
     pub fn next(&mut self) {
-        if self.config.profiles.is_empty() {
-            return;
-        }
-
-        let i = match self.list_state.selected() {
-            Some(i) => {
-                if i >= self.config.profiles.len() - 1 {
-                    0
-                } else {
-                    i + 1
-                }
-            }
-            None => 0,
-        };
-        self.list_state.select(Some(i));
+        self.move_selection(1);
     }
 
     /// Get the currently highlighted profile
@@ -166,31 +152,11 @@ impl App {
             }
             Action::EditProfile => {
                 if let Some(profile) = self.current_profile() {
-                    let api_key = profile
-                        .env
-                        .get("ANTHROPIC_AUTH_TOKEN")
-                        .cloned()
-                        .unwrap_or_default();
-                    let url = profile
-                        .env
-                        .get("ANTHROPIC_BASE_URL")
-                        .cloned()
-                        .unwrap_or_default();
-                    let haiku = profile
-                        .env
-                        .get("ANTHROPIC_DEFAULT_HAIKU_MODEL")
-                        .cloned()
-                        .unwrap_or_default();
-                    let sonnet = profile
-                        .env
-                        .get("ANTHROPIC_DEFAULT_SONNET_MODEL")
-                        .cloned()
-                        .unwrap_or_default();
-                    let opus = profile
-                        .env
-                        .get("ANTHROPIC_DEFAULT_OPUS_MODEL")
-                        .cloned()
-                        .unwrap_or_default();
+                    let api_key = env_value(profile, ENV_AUTH_TOKEN);
+                    let url = env_value(profile, ENV_BASE_URL);
+                    let haiku = env_value(profile, ENV_DEFAULT_HAIKU_MODEL);
+                    let sonnet = env_value(profile, ENV_DEFAULT_SONNET_MODEL);
+                    let opus = env_value(profile, ENV_DEFAULT_OPUS_MODEL);
 
                     self.api_key_input = Input::new(api_key);
                     self.url_input = Input::new(url);
@@ -198,7 +164,9 @@ impl App {
                     self.sonnet_model_input = Input::new(sonnet);
                     self.opus_model_input = Input::new(opus);
                     self.reveal_api_key = false;
-                    self.mode = AppMode::EditProfile { focused_field: 0 };
+                    self.mode = AppMode::EditProfile {
+                        focused_field: EDIT_FIELD_API_KEY,
+                    };
                 }
             }
             Action::SaveEdit => {
@@ -211,19 +179,16 @@ impl App {
 
                     if let Some(i) = self.list_state.selected() {
                         if let Some(profile) = self.config.profiles.get_mut(i) {
-                            profile
-                                .env
-                                .insert("ANTHROPIC_AUTH_TOKEN".to_string(), api_key);
-                            profile.env.insert("ANTHROPIC_BASE_URL".to_string(), url);
-                            profile
-                                .env
-                                .insert("ANTHROPIC_DEFAULT_HAIKU_MODEL".to_string(), haiku);
-                            profile
-                                .env
-                                .insert("ANTHROPIC_DEFAULT_SONNET_MODEL".to_string(), sonnet);
-                            profile
-                                .env
-                                .insert("ANTHROPIC_DEFAULT_OPUS_MODEL".to_string(), opus);
+                            let updates = [
+                                (ENV_AUTH_TOKEN, api_key),
+                                (ENV_BASE_URL, url),
+                                (ENV_DEFAULT_HAIKU_MODEL, haiku),
+                                (ENV_DEFAULT_SONNET_MODEL, sonnet),
+                                (ENV_DEFAULT_OPUS_MODEL, opus),
+                            ];
+                            for (key, value) in updates {
+                                profile.env.insert(key.to_string(), value);
+                            }
 
                             if let Err(e) = self.config.save() {
                                 self.status_message = Some(format!("Failed to save config: {}", e));
@@ -250,5 +215,16 @@ impl App {
                 }
             }
         }
+    }
+
+    fn move_selection(&mut self, delta: isize) {
+        let len = self.config.profiles.len();
+        if len == 0 {
+            return;
+        }
+
+        let current = self.list_state.selected().unwrap_or(0) as isize;
+        let next = (current + delta).rem_euclid(len as isize) as usize;
+        self.list_state.select(Some(next));
     }
 }

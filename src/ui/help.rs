@@ -1,9 +1,9 @@
 use ratatui::{
+    Frame,
     layout::Rect,
     style::{Color, Modifier, Style},
     text::{Line, Span},
     widgets::{Block, Borders, Clear, Paragraph},
-    Frame,
 };
 
 pub fn render_help_popup(frame: &mut Frame, area: Rect) {
@@ -13,31 +13,66 @@ pub fn render_help_popup(frame: &mut Frame, area: Rect) {
     let help_text = vec![
         Line::from(""),
         Line::from(vec![
-            Span::styled("  ^/k  ", Style::default().fg(Color::Cyan).add_modifier(Modifier::BOLD)),
+            Span::styled(
+                "  ^/k  ",
+                Style::default()
+                    .fg(Color::Cyan)
+                    .add_modifier(Modifier::BOLD),
+            ),
             Span::raw("Move selection up"),
         ]),
         Line::from(vec![
-            Span::styled("  v/j  ", Style::default().fg(Color::Cyan).add_modifier(Modifier::BOLD)),
+            Span::styled(
+                "  v/j  ",
+                Style::default()
+                    .fg(Color::Cyan)
+                    .add_modifier(Modifier::BOLD),
+            ),
             Span::raw("Move selection down"),
         ]),
         Line::from(vec![
-            Span::styled("  Enter  ", Style::default().fg(Color::Cyan).add_modifier(Modifier::BOLD)),
+            Span::styled(
+                "  Enter  ",
+                Style::default()
+                    .fg(Color::Cyan)
+                    .add_modifier(Modifier::BOLD),
+            ),
             Span::raw("Launch Claude Code with selected profile"),
         ]),
         Line::from(vec![
-            Span::styled("  ?  ", Style::default().fg(Color::Cyan).add_modifier(Modifier::BOLD)),
+            Span::styled(
+                "  ?  ",
+                Style::default()
+                    .fg(Color::Cyan)
+                    .add_modifier(Modifier::BOLD),
+            ),
             Span::raw("Toggle this help"),
         ]),
         Line::from(vec![
-            Span::styled("  e  ", Style::default().fg(Color::Cyan).add_modifier(Modifier::BOLD)),
+            Span::styled(
+                "  e  ",
+                Style::default()
+                    .fg(Color::Cyan)
+                    .add_modifier(Modifier::BOLD),
+            ),
             Span::raw("Edit profile API key/URL"),
         ]),
         Line::from(vec![
-            Span::styled("  r  ", Style::default().fg(Color::Cyan).add_modifier(Modifier::BOLD)),
+            Span::styled(
+                "  r  ",
+                Style::default()
+                    .fg(Color::Cyan)
+                    .add_modifier(Modifier::BOLD),
+            ),
             Span::raw("Reset configuration to defaults"),
         ]),
         Line::from(vec![
-            Span::styled("  q/Esc  ", Style::default().fg(Color::Cyan).add_modifier(Modifier::BOLD)),
+            Span::styled(
+                "  q/Esc  ",
+                Style::default()
+                    .fg(Color::Cyan)
+                    .add_modifier(Modifier::BOLD),
+            ),
             Span::raw("Quit"),
         ]),
         Line::from(""),

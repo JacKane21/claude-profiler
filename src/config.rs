@@ -4,6 +4,13 @@ use std::collections::HashMap;
 use std::fs;
 use std::path::PathBuf;
 
+pub const ENV_AUTH_TOKEN: &str = "ANTHROPIC_AUTH_TOKEN";
+pub const ENV_BASE_URL: &str = "ANTHROPIC_BASE_URL";
+pub const ENV_DEFAULT_HAIKU_MODEL: &str = "ANTHROPIC_DEFAULT_HAIKU_MODEL";
+pub const ENV_DEFAULT_SONNET_MODEL: &str = "ANTHROPIC_DEFAULT_SONNET_MODEL";
+pub const ENV_DEFAULT_OPUS_MODEL: &str = "ANTHROPIC_DEFAULT_OPUS_MODEL";
+pub const ENV_API_TIMEOUT_MS: &str = "API_TIMEOUT_MS";
+
 /// A single profile configuration
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Profile {
@@ -47,8 +54,8 @@ impl Config {
 
     /// Load config from disk, creating default if not exists
     pub fn load() -> Result<Self> {
-        let config_path = Self::config_file_path()
-            .context("Could not determine config directory")?;
+        let config_path =
+            Self::config_file_path().context("Could not determine config directory")?;
 
         if !config_path.exists() {
             // Create default config
@@ -68,18 +75,20 @@ impl Config {
 
     /// Save config to disk
     pub fn save(&self) -> Result<()> {
-        let config_dir = Self::config_dir()
-            .context("Could not determine config directory")?;
+        let config_dir = Self::config_dir().context("Could not determine config directory")?;
 
         // Create directory if it doesn't exist
-        fs::create_dir_all(&config_dir)
-            .with_context(|| format!("Failed to create config directory: {}", config_dir.display()))?;
+        fs::create_dir_all(&config_dir).with_context(|| {
+            format!(
+                "Failed to create config directory: {}",
+                config_dir.display()
+            )
+        })?;
 
-        let config_path = Self::config_file_path()
-            .context("Could not determine config file path")?;
+        let config_path =
+            Self::config_file_path().context("Could not determine config file path")?;
 
-        let contents = toml::to_string_pretty(self)
-            .context("Failed to serialize config")?;
+        let contents = toml::to_string_pretty(self).context("Failed to serialize config")?;
 
         fs::write(&config_path, contents)
             .with_context(|| format!("Failed to write config file: {}", config_path.display()))?;
@@ -99,29 +108,24 @@ impl Config {
                 },
                 Profile {
                     name: "zai".to_string(),
-                    description: "Z.ai API proxy (edit profiles.toml to add your API key)".to_string(),
+                    description: "Z.ai API proxy (edit profiles.toml to add your API key)"
+                        .to_string(),
                     env: HashMap::from([
                         (
-                            "ANTHROPIC_AUTH_TOKEN".to_string(),
+                            ENV_AUTH_TOKEN.to_string(),
                             "YOUR_ZAI_API_KEY_HERE".to_string(),
                         ),
                         (
-                            "ANTHROPIC_BASE_URL".to_string(),
+                            ENV_BASE_URL.to_string(),
                             "https://api.z.ai/api/anthropic".to_string(),
                         ),
                         (
-                            "ANTHROPIC_DEFAULT_HAIKU_MODEL".to_string(),
+                            ENV_DEFAULT_HAIKU_MODEL.to_string(),
                             "glm-4.5-air".to_string(),
                         ),
-                        (
-                            "ANTHROPIC_DEFAULT_SONNET_MODEL".to_string(),
-                            "glm-4.7".to_string(),
-                        ),
-                        (
-                            "ANTHROPIC_DEFAULT_OPUS_MODEL".to_string(),
-                            "glm-4.7".to_string(),
-                        ),
-                        ("API_TIMEOUT_MS".to_string(), "3000000".to_string()),
+                        (ENV_DEFAULT_SONNET_MODEL.to_string(), "glm-4.7".to_string()),
+                        (ENV_DEFAULT_OPUS_MODEL.to_string(), "glm-4.7".to_string()),
+                        (ENV_API_TIMEOUT_MS.to_string(), "3000000".to_string()),
                     ]),
                 },
             ],

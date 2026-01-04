@@ -2,14 +2,22 @@ mod help;
 mod profile_list;
 
 use ratatui::{
+    Frame,
     layout::{Constraint, Direction, Layout, Rect},
     style::{Color, Style},
     text::{Line, Span},
     widgets::{Block, Borders, Clear, Paragraph},
-    Frame,
 };
+use std::borrow::Cow;
 
-use crate::app::{App, AppMode};
+use crate::app::{
+    App, AppMode, EDIT_FIELD_API_KEY, EDIT_FIELD_HAIKU, EDIT_FIELD_OPUS, EDIT_FIELD_SONNET,
+    EDIT_FIELD_URL,
+};
+use crate::config::{
+    ENV_AUTH_TOKEN, ENV_BASE_URL, ENV_DEFAULT_HAIKU_MODEL, ENV_DEFAULT_OPUS_MODEL,
+    ENV_DEFAULT_SONNET_MODEL,
+};
 
 pub use help::render_help_popup;
 pub use profile_list::render_profile_list;
@@ -19,10 +27,10 @@ pub fn render(frame: &mut Frame, app: &mut App) {
     let chunks = Layout::default()
         .direction(Direction::Vertical)
         .constraints([
-            Constraint::Length(3),  // Title
-            Constraint::Min(8),     // Profile list
-            Constraint::Length(7),  // Details panel
-            Constraint::Length(3),  // Footer
+            Constraint::Length(3), // Title
+            Constraint::Min(8),    // Profile list
+            Constraint::Length(7), // Details panel
+            Constraint::Length(3), // Footer
         ])
         .split(frame.area());
 
@@ -46,10 +54,7 @@ pub fn render(frame: &mut Frame, app: &mut App) {
 
 fn render_title(frame: &mut Frame, area: Rect) {
     let title = Paragraph::new(Line::from(vec![
-        Span::styled(
-            "ClaudeProfiler",
-            Style::default().fg(Color::Cyan),
-        ),
+        Span::styled("ClaudeProfiler", Style::default().fg(Color::Cyan)),
         Span::raw(" v0.1.0"),
     ]))
     .block(Block::default().borders(Borders::ALL));
@@ -64,45 +69,43 @@ fn render_details(frame: &mut Frame, app: &App, area: Rect) {
                 Style::default().fg(Color::DarkGray),
             ))]
         } else {
-            let mut lines: Vec<Line> = profile
-                .env
-                .iter()
+            let mut env_items: Vec<(&String, &String)> = profile.env.iter().collect();
+            env_items.sort_by(|(a, _), (b, _)| a.cmp(b));
+            env_items
+                .into_iter()
                 .map(|(key, value)| {
-                    let display_value = if key.to_uppercase().contains("TOKEN")
-                        || key.to_uppercase().contains("KEY")
-                        || key.to_uppercase().contains("SECRET")
-                    {
-                        // Mask sensitive values
-                        if value.len() > 8 {
-                            format!("{}...{}", &value[..4], &value[value.len() - 4..])
-                        } else {
-                            "****".to_string()
-                        }
+                    let display_value = if is_sensitive_key(key) {
+                        mask_value(value)
                     } else {
-                        value.clone()
+                        value.to_string()
                     };
                     Line::from(vec![
-                        Span::styled(key.clone(), Style::default().fg(Color::Yellow)),
+                        Span::styled(key.as_str(), Style::default().fg(Color::Yellow)),
                         Span::raw(" = "),
-                        Span::styled(format!("\"{}\"", display_value), Style::default().fg(Color::Green)),
+                        Span::styled(
+                            format!("\"{}\"", display_value),
+                            Style::default().fg(Color::Green),
+                        ),
                     ])
                 })
-                .collect();
-            lines.sort_by(|a, b| a.to_string().cmp(&b.to_string()));
-            lines
+                .collect()
         }
     } else {
         vec![Line::from("No profile selected")]
     };
 
-    let details = Paragraph::new(content)
-        .block(Block::default().borders(Borders::ALL).title("Environment Variables"));
+    let details = Paragraph::new(content).block(
+        Block::default()
+            .borders(Borders::ALL)
+            .title("Environment Variables"),
+    );
     frame.render_widget(details, area);
 }
 
 fn render_footer(frame: &mut Frame, area: Rect, app: &App) {
     let footer_text = if let Some(ref msg) = app.status_message {
-        let is_error = msg.to_lowercase().contains("failed") || msg.to_lowercase().contains("error");
+        let msg_lower = msg.to_ascii_lowercase();
+        let is_error = msg_lower.contains("failed") || msg_lower.contains("error");
         let (label, color) = if is_error {
             ("Error: ", Color::Red)
         } else {
@@ -136,8 +139,7 @@ fn render_footer(frame: &mut Frame, area: Rect, app: &App) {
         ])
     };
 
-    let footer = Paragraph::new(footer_text)
-        .block(Block::default().borders(Borders::ALL));
+    let footer = Paragraph::new(footer_text).block(Block::default().borders(Borders::ALL));
     frame.render_widget(footer, area);
 }
 
@@ -167,78 +169,47 @@ fn render_edit_profile(frame: &mut Frame, app: &App, area: Rect, focused_field: 
         ])
         .split(inner_area);
 
-    let api_key_style = if focused_field == 0 {
-        Style::default().fg(Color::Cyan)
+    let api_key_value: Cow<'_, str> = if app.reveal_api_key {
+        Cow::Borrowed(app.api_key_input.value())
     } else {
-        Style::default().fg(Color::DarkGray)
+        Cow::Owned("*".repeat(app.api_key_input.value().len()))
     };
 
-    let api_key_value = if app.reveal_api_key {
-        app.api_key_input.value().to_string()
-    } else {
-        "*".repeat(app.api_key_input.value().len())
-    };
-
-    let api_key_input = Paragraph::new(api_key_value).block(
-        Block::default()
-            .borders(Borders::ALL)
-            .title(" ANTHROPIC_AUTH_TOKEN ")
-            .border_style(api_key_style),
+    render_edit_field(
+        frame,
+        chunks[0],
+        ENV_AUTH_TOKEN,
+        api_key_value.as_ref(),
+        focused_field == EDIT_FIELD_API_KEY,
     );
-    frame.render_widget(api_key_input, chunks[0]);
-
-    let url_style = if focused_field == 1 {
-        Style::default().fg(Color::Cyan)
-    } else {
-        Style::default().fg(Color::DarkGray)
-    };
-
-    let url_input = Paragraph::new(app.url_input.value()).block(
-        Block::default()
-            .borders(Borders::ALL)
-            .title(" ANTHROPIC_BASE_URL ")
-            .border_style(url_style),
+    render_edit_field(
+        frame,
+        chunks[1],
+        ENV_BASE_URL,
+        app.url_input.value(),
+        focused_field == EDIT_FIELD_URL,
     );
-    frame.render_widget(url_input, chunks[1]);
-
-    let haiku_style = if focused_field == 2 {
-        Style::default().fg(Color::Cyan)
-    } else {
-        Style::default().fg(Color::DarkGray)
-    };
-    let haiku_input = Paragraph::new(app.haiku_model_input.value()).block(
-        Block::default()
-            .borders(Borders::ALL)
-            .title(" ANTHROPIC_DEFAULT_HAIKU_MODEL ")
-            .border_style(haiku_style),
+    render_edit_field(
+        frame,
+        chunks[2],
+        ENV_DEFAULT_HAIKU_MODEL,
+        app.haiku_model_input.value(),
+        focused_field == EDIT_FIELD_HAIKU,
     );
-    frame.render_widget(haiku_input, chunks[2]);
-
-    let sonnet_style = if focused_field == 3 {
-        Style::default().fg(Color::Cyan)
-    } else {
-        Style::default().fg(Color::DarkGray)
-    };
-    let sonnet_input = Paragraph::new(app.sonnet_model_input.value()).block(
-        Block::default()
-            .borders(Borders::ALL)
-            .title(" ANTHROPIC_DEFAULT_SONNET_MODEL ")
-            .border_style(sonnet_style),
+    render_edit_field(
+        frame,
+        chunks[3],
+        ENV_DEFAULT_SONNET_MODEL,
+        app.sonnet_model_input.value(),
+        focused_field == EDIT_FIELD_SONNET,
     );
-    frame.render_widget(sonnet_input, chunks[3]);
-
-    let opus_style = if focused_field == 4 {
-        Style::default().fg(Color::Cyan)
-    } else {
-        Style::default().fg(Color::DarkGray)
-    };
-    let opus_input = Paragraph::new(app.opus_model_input.value()).block(
-        Block::default()
-            .borders(Borders::ALL)
-            .title(" ANTHROPIC_DEFAULT_OPUS_MODEL ")
-            .border_style(opus_style),
+    render_edit_field(
+        frame,
+        chunks[4],
+        ENV_DEFAULT_OPUS_MODEL,
+        app.opus_model_input.value(),
+        focused_field == EDIT_FIELD_OPUS,
     );
-    frame.render_widget(opus_input, chunks[4]);
 
     let help_text = Line::from(vec![
         Span::styled("Tab", Style::default().fg(Color::Cyan)),
@@ -253,30 +224,16 @@ fn render_edit_profile(frame: &mut Frame, app: &App, area: Rect, focused_field: 
     frame.render_widget(Paragraph::new(help_text), chunks[6]);
 
     // Set cursor
-    let cursor_pos = match focused_field {
-        0 => (
-            chunks[0].x + app.api_key_input.visual_cursor() as u16 + 1,
-            chunks[0].y + 1,
-        ),
-        1 => (
-            chunks[1].x + app.url_input.visual_cursor() as u16 + 1,
-            chunks[1].y + 1,
-        ),
-        2 => (
-            chunks[2].x + app.haiku_model_input.visual_cursor() as u16 + 1,
-            chunks[2].y + 1,
-        ),
-        3 => (
-            chunks[3].x + app.sonnet_model_input.visual_cursor() as u16 + 1,
-            chunks[3].y + 1,
-        ),
-        4 => (
-            chunks[4].x + app.opus_model_input.visual_cursor() as u16 + 1,
-            chunks[4].y + 1,
-        ),
-        _ => (0, 0),
-    };
-    frame.set_cursor_position(cursor_pos);
+    let cursor_positions = [
+        (chunks[0], app.api_key_input.visual_cursor() as u16),
+        (chunks[1], app.url_input.visual_cursor() as u16),
+        (chunks[2], app.haiku_model_input.visual_cursor() as u16),
+        (chunks[3], app.sonnet_model_input.visual_cursor() as u16),
+        (chunks[4], app.opus_model_input.visual_cursor() as u16),
+    ];
+    if let Some((chunk, cursor_x)) = cursor_positions.get(focused_field) {
+        frame.set_cursor_position((chunk.x + *cursor_x + 1, chunk.y + 1));
+    }
 }
 
 /// Helper function to create a centered rectangle
@@ -298,4 +255,36 @@ fn centered_rect(percent_x: u16, percent_y: u16, r: Rect) -> Rect {
             Constraint::Percentage((100 - percent_x) / 2),
         ])
         .split(popup_layout[1])[1]
+}
+
+fn field_border_style(focused: bool) -> Style {
+    if focused {
+        Style::default().fg(Color::Cyan)
+    } else {
+        Style::default().fg(Color::DarkGray)
+    }
+}
+
+fn render_edit_field(frame: &mut Frame, area: Rect, title: &str, value: &str, focused: bool) {
+    let title_line = Line::from(vec![Span::raw(" "), Span::raw(title), Span::raw(" ")]);
+    let input = Paragraph::new(value).block(
+        Block::default()
+            .borders(Borders::ALL)
+            .title(title_line)
+            .border_style(field_border_style(focused)),
+    );
+    frame.render_widget(input, area);
+}
+
+fn is_sensitive_key(key: &str) -> bool {
+    let upper = key.to_ascii_uppercase();
+    upper.contains("TOKEN") || upper.contains("KEY") || upper.contains("SECRET")
+}
+
+fn mask_value(value: &str) -> String {
+    if value.len() > 8 {
+        format!("{}...{}", &value[..4], &value[value.len() - 4..])
+    } else {
+        "****".to_string()
+    }
 }

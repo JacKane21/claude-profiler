@@ -8,7 +8,10 @@ mod ui;
 use anyhow::Result;
 use crossterm::event::{self, Event, KeyCode, KeyEventKind};
 
-use crate::app::{Action, App, AppMode};
+use crate::app::{
+    Action, App, AppMode, EDIT_FIELD_API_KEY, EDIT_FIELD_COUNT, EDIT_FIELD_HAIKU, EDIT_FIELD_OPUS,
+    EDIT_FIELD_SONNET, EDIT_FIELD_URL,
+};
 use crate::config::{Config, Profile};
 use tui_input::backend::crossterm::EventHandler;
 
@@ -94,46 +97,27 @@ fn run_app(terminal: &mut tui::Tui, app: &mut App) -> Result<Option<Profile>> {
                             KeyCode::Enter => Some(Action::SaveEdit),
                             KeyCode::Tab | KeyCode::Down => {
                                 app.mode = AppMode::EditProfile {
-                                    focused_field: (focused_field + 1) % 5,
+                                    focused_field: (focused_field + 1) % EDIT_FIELD_COUNT,
                                 };
                                 None
                             }
                             KeyCode::BackTab | KeyCode::Up => {
                                 app.mode = AppMode::EditProfile {
-                                    focused_field: if focused_field == 0 {
-                                        4
-                                    } else {
-                                        focused_field - 1
-                                    },
+                                    focused_field: focused_field
+                                        .checked_sub(1)
+                                        .unwrap_or(EDIT_FIELD_COUNT - 1),
                                 };
                                 None
                             }
                             KeyCode::Char('g')
                                 if key.modifiers.contains(event::KeyModifiers::CONTROL)
-                                    && focused_field == 0 =>
+                                    && focused_field == EDIT_FIELD_API_KEY =>
                             {
                                 app.reveal_api_key = !app.reveal_api_key;
                                 None
                             }
                             _ => {
-                                match focused_field {
-                                    0 => {
-                                        app.api_key_input.handle_event(&Event::Key(key));
-                                    }
-                                    1 => {
-                                        app.url_input.handle_event(&Event::Key(key));
-                                    }
-                                    2 => {
-                                        app.haiku_model_input.handle_event(&Event::Key(key));
-                                    }
-                                    3 => {
-                                        app.sonnet_model_input.handle_event(&Event::Key(key));
-                                    }
-                                    4 => {
-                                        app.opus_model_input.handle_event(&Event::Key(key));
-                                    }
-                                    _ => {}
-                                }
+                                handle_edit_input(app, focused_field, key);
                                 None
                             }
                         },
@@ -157,4 +141,15 @@ fn run_app(terminal: &mut tui::Tui, app: &mut App) -> Result<Option<Profile>> {
             _ => {}
         }
     }
+}
+
+fn handle_edit_input(app: &mut App, focused_field: usize, key: event::KeyEvent) {
+    match focused_field {
+        EDIT_FIELD_API_KEY => app.api_key_input.handle_event(&Event::Key(key)),
+        EDIT_FIELD_URL => app.url_input.handle_event(&Event::Key(key)),
+        EDIT_FIELD_HAIKU => app.haiku_model_input.handle_event(&Event::Key(key)),
+        EDIT_FIELD_SONNET => app.sonnet_model_input.handle_event(&Event::Key(key)),
+        EDIT_FIELD_OPUS => app.opus_model_input.handle_event(&Event::Key(key)),
+        _ => None,
+    };
 }

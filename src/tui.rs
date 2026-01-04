@@ -1,12 +1,12 @@
-use std::io::{stdout, Stdout};
+use std::io::{Stdout, stdout};
 
 use anyhow::Result;
 use crossterm::{
+    event::{KeyboardEnhancementFlags, PopKeyboardEnhancementFlags, PushKeyboardEnhancementFlags},
     execute,
-    terminal::{disable_raw_mode, enable_raw_mode, EnterAlternateScreen, LeaveAlternateScreen},
-    event::{KeyboardEnhancementFlags, PushKeyboardEnhancementFlags, PopKeyboardEnhancementFlags},
+    terminal::{EnterAlternateScreen, LeaveAlternateScreen, disable_raw_mode, enable_raw_mode},
 };
-use ratatui::{backend::CrosstermBackend, Terminal};
+use ratatui::{Terminal, backend::CrosstermBackend};
 
 pub type Tui = Terminal<CrosstermBackend<Stdout>>;
 
@@ -25,11 +25,7 @@ pub fn init() -> Result<Tui> {
 
 /// Restore terminal to normal state
 pub fn restore() -> Result<()> {
-    execute!(
-        stdout(),
-        PopKeyboardEnhancementFlags,
-        LeaveAlternateScreen
-    )?;
+    execute!(stdout(), PopKeyboardEnhancementFlags, LeaveAlternateScreen)?;
     disable_raw_mode()?;
     Ok(())
 }
