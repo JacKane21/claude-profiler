@@ -1,0 +1,160 @@
+mod app;
+mod config;
+mod error;
+mod launcher;
+mod tui;
+mod ui;
+
+use anyhow::Result;
+use crossterm::event::{self, Event, KeyCode, KeyEventKind};
+
+use crate::app::{Action, App, AppMode};
+use crate::config::{Config, Profile};
+use tui_input::backend::crossterm::EventHandler;
+
+fn main() -> Result<()> {
+    // Install panic hook for clean terminal restoration
+    tui::install_panic_hook();
+
+    // Load or create config
+    let config = Config::load()?;
+
+    if config.profiles.is_empty() {
+        eprintln!("No profiles defined in configuration.");
+        eprintln!(
+            "Please add profiles to: {}",
+            Config::config_file_path()
+                .map(|p| p.display().to_string())
+                .unwrap_or_else(|| "~/.config/claude-profiler/profiles.toml".to_string())
+        );
+        return Ok(());
+    }
+
+    // Initialize app state
+    let mut app = App::new(config);
+
+    // Initialize terminal
+    let mut terminal = tui::init()?;
+
+    // Main event loop
+    let result = run_app(&mut terminal, &mut app);
+
+    // Restore the terminal before potentially launching Claude
+    tui::restore()?;
+
+    // Handle the result
+    match result {
+        Ok(Some(profile)) => {
+            // User selected a profile - launch Claude Code
+            println!("Launching Claude Code with profile: {}", profile.name);
+            launcher::exec_claude(&profile)?;
+        }
+        Ok(None) => {
+            // User quit without selecting
+            println!("Goodbye!");
+        }
+        Err(e) => {
+            eprintln!("Error: {}", e);
+            return Err(e);
+        }
+    }
+
+    Ok(())
+}
+
+fn run_app(terminal: &mut tui::Tui, app: &mut App) -> Result<Option<Profile>> {
+    loop {
+        // Render
+        terminal.draw(|frame| ui::render(frame, app))?;
+
+        // Handle input
+        match event::read()? {
+            Event::Key(key) => {
+                if key.kind == KeyEventKind::Press {
+                    // Clear status message on any key press in Normal mode
+                    if app.mode == AppMode::Normal && app.status_message.is_some() {
+                        app.status_message = None;
+                        continue;
+                    }
+
+                    let action = match app.mode {
+                        AppMode::Normal => match key.code {
+                            KeyCode::Char('q') | KeyCode::Esc => Some(Action::Quit),
+                            KeyCode::Up | KeyCode::Char('k') => Some(Action::MoveUp),
+                            KeyCode::Down | KeyCode::Char('j') => Some(Action::MoveDown),
+                            KeyCode::Enter => Some(Action::SelectProfile),
+                            KeyCode::Char('?') => Some(Action::ShowHelp),
+                            KeyCode::Char('e') => Some(Action::EditProfile),
+                            KeyCode::Char('r') => Some(Action::ResetConfig),
+                            _ => None,
+                        },
+                        AppMode::Help => Some(Action::HideHelp),
+                        AppMode::EditProfile { focused_field } => match key.code {
+                            KeyCode::Esc => Some(Action::CancelEdit),
+                            KeyCode::Enter => Some(Action::SaveEdit),
+                            KeyCode::Tab | KeyCode::Down => {
+                                app.mode = AppMode::EditProfile {
+                                    focused_field: (focused_field + 1) % 5,
+                                };
+                                None
+                            }
+                            KeyCode::BackTab | KeyCode::Up => {
+                                app.mode = AppMode::EditProfile {
+                                    focused_field: if focused_field == 0 {
+                                        4
+                                    } else {
+                                        focused_field - 1
+                                    },
+                                };
+                                None
+                            }
+                            KeyCode::Char('g')
+                                if key.modifiers.contains(event::KeyModifiers::CONTROL)
+                                    && focused_field == 0 =>
+                            {
+                                app.reveal_api_key = !app.reveal_api_key;
+                                None
+                            }
+                            _ => {
+                                match focused_field {
+                                    0 => {
+                                        app.api_key_input.handle_event(&Event::Key(key));
+                                    }
+                                    1 => {
+                                        app.url_input.handle_event(&Event::Key(key));
+                                    }
+                                    2 => {
+                                        app.haiku_model_input.handle_event(&Event::Key(key));
+                                    }
+                                    3 => {
+                                        app.sonnet_model_input.handle_event(&Event::Key(key));
+                                    }
+                                    4 => {
+                                        app.opus_model_input.handle_event(&Event::Key(key));
+                                    }
+                                    _ => {}
+                                }
+                                None
+                            }
+                        },
+                    };
+
+                    if let Some(action) = action {
+                        app.handle_action(action);
+                    }
+
+                    if app.should_quit {
+                        return Ok(None);
+                    }
+
+                    if let Some(profile) = app.selected_profile.take() {
+                        return Ok(Some(profile));
+                    }
+                }
+
+                // Hold-to-reveal removed; toggle handled in EditProfile key handling.
+            }
+            _ => {}
+        }
+    }
+}

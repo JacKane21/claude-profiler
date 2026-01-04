@@ -1,0 +1,14 @@
+[package]
+name = "ClaudeProfiler"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+ratatui = "0.29"
+crossterm = "0.28"
+serde = { version = "1.0", features = ["derive"] }
+toml = "0.8"
+dirs = "5.0"
+anyhow = "1.0"
+thiserror = "1.0"
+tui-input = "0.11"
