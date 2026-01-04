@@ -9,6 +9,9 @@ pub const ENV_BASE_URL: &str = "ANTHROPIC_BASE_URL";
 pub const ENV_DEFAULT_HAIKU_MODEL: &str = "ANTHROPIC_DEFAULT_HAIKU_MODEL";
 pub const ENV_DEFAULT_SONNET_MODEL: &str = "ANTHROPIC_DEFAULT_SONNET_MODEL";
 pub const ENV_DEFAULT_OPUS_MODEL: &str = "ANTHROPIC_DEFAULT_OPUS_MODEL";
+pub const ENV_MODEL: &str = "ANTHROPIC_MODEL";
+pub const ENV_SMALL_FAST_MODEL: &str = "ANTHROPIC_SMALL_FAST_MODEL";
+pub const ENV_DISABLE_NONESSENTIAL_TRAFFIC: &str = "CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC";
 pub const ENV_API_TIMEOUT_MS: &str = "API_TIMEOUT_MS";
 
 /// A single profile configuration
@@ -125,6 +128,40 @@ impl Config {
                         ),
                         (ENV_DEFAULT_SONNET_MODEL.to_string(), "glm-4.7".to_string()),
                         (ENV_DEFAULT_OPUS_MODEL.to_string(), "glm-4.7".to_string()),
+                        (ENV_API_TIMEOUT_MS.to_string(), "3000000".to_string()),
+                    ]),
+                },
+                Profile {
+                    name: "minimax".to_string(),
+                    description: "MiniMax API proxy (edit profiles.toml to add your API key)"
+                        .to_string(),
+                    env: HashMap::from([
+                        (
+                            ENV_AUTH_TOKEN.to_string(),
+                            "YOUR_MINIMAX_API_KEY_HERE".to_string(),
+                        ),
+                        (
+                            ENV_BASE_URL.to_string(),
+                            "https://api.minimax.io/anthropic".to_string(),
+                        ),
+                        (ENV_MODEL.to_string(), "MiniMax-M2.1".to_string()),
+                        (ENV_SMALL_FAST_MODEL.to_string(), "MiniMax-M2.1".to_string()),
+                        (
+                            ENV_DEFAULT_HAIKU_MODEL.to_string(),
+                            "MiniMax-M2.1".to_string(),
+                        ),
+                        (
+                            ENV_DEFAULT_SONNET_MODEL.to_string(),
+                            "MiniMax-M2.1".to_string(),
+                        ),
+                        (
+                            ENV_DEFAULT_OPUS_MODEL.to_string(),
+                            "MiniMax-M2.1".to_string(),
+                        ),
+                        (
+                            ENV_DISABLE_NONESSENTIAL_TRAFFIC.to_string(),
+                            "1".to_string(),
+                        ),
                         (ENV_API_TIMEOUT_MS.to_string(), "3000000".to_string()),
                     ]),
                 },
