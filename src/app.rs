@@ -4,7 +4,7 @@ use tui_input::Input;
 
 use crate::config::{
     Config, ENV_AUTH_TOKEN, ENV_BASE_URL, ENV_DEFAULT_HAIKU_MODEL, ENV_DEFAULT_OPUS_MODEL,
-    ENV_DEFAULT_SONNET_MODEL, ENV_MODEL, Profile,
+    ENV_DEFAULT_SONNET_MODEL, ENV_MODEL, ENV_SMALL_FAST_MODEL, Profile,
 };
 use crate::proxy;
 
@@ -24,6 +24,7 @@ pub enum Action {
     SelectLMStudio,
     OpenLMStudio,
     BackToProfiles,
+    ToggleAuxiliarySelection,
 }
 
 /// Current application mode
@@ -89,6 +90,9 @@ pub struct App {
 
     /// Selection state for LMStudio models
     pub lmstudio_list_state: ListState,
+
+    /// Whether we're selecting the auxiliary model (true) or main model (false)
+    pub selecting_auxiliary_model: bool,
 }
 
 fn env_value(profile: &Profile, key: &str) -> String {
@@ -116,6 +120,7 @@ impl App {
             reveal_api_key: false,
             lmstudio_models: Vec::new(),
             lmstudio_list_state: ListState::default(),
+            selecting_auxiliary_model: false,
         }
     }
 
@@ -142,40 +147,86 @@ impl App {
             AppMode::LMStudioModelSelection => {
                 if let Some(i) = self.lmstudio_list_state.selected() {
                     if let Some(model_name) = self.lmstudio_models.get(i).cloned() {
-                        // Create the environment for the selected LMStudio model
-                        // Point to our built-in proxy
-                        let mut env = HashMap::new();
-                        env.insert(
-                            ENV_BASE_URL.to_string(),
-                            proxy::PROXY_ANTHROPIC_URL.to_string(),
-                        );
-                        env.insert(ENV_AUTH_TOKEN.to_string(), "lmstudio".to_string());
-
-                        // Set all models to the same LMStudio model
-                        env.insert(ENV_DEFAULT_HAIKU_MODEL.to_string(), model_name.clone());
-                        env.insert(ENV_DEFAULT_SONNET_MODEL.to_string(), model_name.clone());
-                        env.insert(ENV_DEFAULT_OPUS_MODEL.to_string(), model_name.clone());
-                        env.insert(ENV_MODEL.to_string(), model_name.clone());
-
                         // Update the "lmstudio" profile in config
                         if let Some(lmstudio_profile) =
                             self.config.profiles.iter_mut().find(|p| p.name == "lmstudio")
                         {
-                            lmstudio_profile.env = env;
-                            lmstudio_profile.description =
-                                format!("LMStudio model: {}", model_name);
+                            if self.selecting_auxiliary_model {
+                                // Setting auxiliary model only
+                                lmstudio_profile
+                                    .env
+                                    .insert(ENV_SMALL_FAST_MODEL.to_string(), model_name.clone());
 
-                            if let Err(e) = self.config.save() {
-                                self.status_message = Some(format!("Failed to save config: {}", e));
+                                // Update description to show both models
+                                let main_model = lmstudio_profile
+                                    .env
+                                    .get(ENV_MODEL)
+                                    .cloned()
+                                    .unwrap_or_else(|| "none".to_string());
+                                lmstudio_profile.description = format!(
+                                    "Main: {} | Aux: {}",
+                                    main_model, model_name
+                                );
+
+                                if let Err(e) = self.config.save() {
+                                    self.status_message =
+                                        Some(format!("Failed to save config: {}", e));
+                                } else {
+                                    self.status_message = Some(format!(
+                                        "Set auxiliary model: {}",
+                                        model_name
+                                    ));
+                                }
                             } else {
-                                self.status_message = Some(format!(
-                                    "Configured LMStudio with {}",
-                                    model_name
-                                ));
+                                // Setting main model - create full environment
+                                let mut env = HashMap::new();
+                                env.insert(
+                                    ENV_BASE_URL.to_string(),
+                                    proxy::PROXY_ANTHROPIC_URL.to_string(),
+                                );
+                                env.insert(ENV_AUTH_TOKEN.to_string(), "lmstudio".to_string());
+
+                                // Set all models to the same LMStudio model
+                                env.insert(
+                                    ENV_DEFAULT_HAIKU_MODEL.to_string(),
+                                    model_name.clone(),
+                                );
+                                env.insert(
+                                    ENV_DEFAULT_SONNET_MODEL.to_string(),
+                                    model_name.clone(),
+                                );
+                                env.insert(
+                                    ENV_DEFAULT_OPUS_MODEL.to_string(),
+                                    model_name.clone(),
+                                );
+                                env.insert(ENV_MODEL.to_string(), model_name.clone());
+
+                                // Preserve existing auxiliary model if set
+                                if let Some(aux) =
+                                    lmstudio_profile.env.get(ENV_SMALL_FAST_MODEL).cloned()
+                                {
+                                    env.insert(ENV_SMALL_FAST_MODEL.to_string(), aux.clone());
+                                    lmstudio_profile.description =
+                                        format!("Main: {} | Aux: {}", model_name, aux);
+                                } else {
+                                    lmstudio_profile.description =
+                                        format!("LMStudio model: {}", model_name);
+                                }
+
+                                lmstudio_profile.env = env;
+
+                                if let Err(e) = self.config.save() {
+                                    self.status_message =
+                                        Some(format!("Failed to save config: {}", e));
+                                } else {
+                                    self.status_message =
+                                        Some(format!("Set main model: {}", model_name));
+                                }
                             }
                         }
 
                         self.mode = AppMode::Normal;
+                        self.selecting_auxiliary_model = false;
                     }
                 }
             }
@@ -291,6 +342,12 @@ impl App {
             }
             Action::BackToProfiles => {
                 self.mode = AppMode::Normal;
+                self.selecting_auxiliary_model = false;
+            }
+            Action::ToggleAuxiliarySelection => {
+                if self.mode == AppMode::LMStudioModelSelection {
+                    self.selecting_auxiliary_model = !self.selecting_auxiliary_model;
+                }
             }
         }
     }

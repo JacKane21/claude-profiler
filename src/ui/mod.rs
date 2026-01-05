@@ -125,23 +125,40 @@ fn render_footer(frame: &mut Frame, area: Rect, app: &App) {
         ])
     } else {
         match app.mode {
-            AppMode::LMStudioModelSelection => Line::from(vec![
-                Span::styled("[", Style::default().fg(Color::DarkGray)),
-                Span::styled("^/v", Style::default().fg(Color::Cyan)),
-                Span::styled("] Navigate  ", Style::default().fg(Color::DarkGray)),
-                Span::styled("[", Style::default().fg(Color::DarkGray)),
-                Span::styled("Enter", Style::default().fg(Color::Cyan)),
-                Span::styled("] Select  ", Style::default().fg(Color::DarkGray)),
-                Span::styled("[", Style::default().fg(Color::DarkGray)),
-                Span::styled("r", Style::default().fg(Color::Cyan)),
-                Span::styled("] Refresh  ", Style::default().fg(Color::DarkGray)),
-                Span::styled("[", Style::default().fg(Color::DarkGray)),
-                Span::styled("l", Style::default().fg(Color::Cyan)),
-                Span::styled("] Open LMStudio  ", Style::default().fg(Color::DarkGray)),
-                Span::styled("[", Style::default().fg(Color::DarkGray)),
-                Span::styled("Esc", Style::default().fg(Color::Cyan)),
-                Span::styled("] Back", Style::default().fg(Color::DarkGray)),
-            ]),
+            AppMode::LMStudioModelSelection => {
+                let mode_label = if app.selecting_auxiliary_model {
+                    "AUX"
+                } else {
+                    "MAIN"
+                };
+                let mode_color = if app.selecting_auxiliary_model {
+                    Color::Yellow
+                } else {
+                    Color::Cyan
+                };
+                Line::from(vec![
+                    Span::styled("[", Style::default().fg(Color::DarkGray)),
+                    Span::styled("^/v", Style::default().fg(Color::Cyan)),
+                    Span::styled("] Navigate  ", Style::default().fg(Color::DarkGray)),
+                    Span::styled("[", Style::default().fg(Color::DarkGray)),
+                    Span::styled("a", Style::default().fg(Color::Cyan)),
+                    Span::styled("] ", Style::default().fg(Color::DarkGray)),
+                    Span::styled(mode_label, Style::default().fg(mode_color)),
+                    Span::styled("  ", Style::default().fg(Color::DarkGray)),
+                    Span::styled("[", Style::default().fg(Color::DarkGray)),
+                    Span::styled("Enter", Style::default().fg(Color::Cyan)),
+                    Span::styled("] Select  ", Style::default().fg(Color::DarkGray)),
+                    Span::styled("[", Style::default().fg(Color::DarkGray)),
+                    Span::styled("r", Style::default().fg(Color::Cyan)),
+                    Span::styled("] Refresh  ", Style::default().fg(Color::DarkGray)),
+                    Span::styled("[", Style::default().fg(Color::DarkGray)),
+                    Span::styled("l", Style::default().fg(Color::Cyan)),
+                    Span::styled("] Open App  ", Style::default().fg(Color::DarkGray)),
+                    Span::styled("[", Style::default().fg(Color::DarkGray)),
+                    Span::styled("Esc", Style::default().fg(Color::Cyan)),
+                    Span::styled("] Back", Style::default().fg(Color::DarkGray)),
+                ])
+            }
             _ => Line::from(vec![
                 Span::styled("[", Style::default().fg(Color::DarkGray)),
                 Span::styled("^/v", Style::default().fg(Color::Cyan)),
@@ -319,21 +336,72 @@ fn mask_value(value: &str) -> String {
 }
 
 fn render_lmstudio_model_list(frame: &mut Frame, app: &mut App, area: Rect) {
-    use ratatui::widgets::{List, ListItem};
     use ratatui::style::Modifier;
+    use ratatui::widgets::{List, ListItem};
+
+    // Get current selections for display
+    let lmstudio_profile = app.config.profiles.iter().find(|p| p.name == "lmstudio");
+    let current_main = lmstudio_profile
+        .and_then(|p| p.env.get(crate::config::ENV_MODEL))
+        .map(|s| s.as_str())
+        .unwrap_or("none");
+    let current_aux = lmstudio_profile
+        .and_then(|p| p.env.get(crate::config::ENV_SMALL_FAST_MODEL))
+        .map(|s| s.as_str())
+        .unwrap_or("none");
 
     let items: Vec<ListItem> = app
         .lmstudio_models
         .iter()
         .map(|model| {
-            ListItem::new(Line::from(vec![
-                Span::styled(model, Style::default().add_modifier(Modifier::BOLD)),
-            ]))
+            // Mark current selections
+            let mut spans = vec![Span::styled(
+                model,
+                Style::default().add_modifier(Modifier::BOLD),
+            )];
+
+            let is_main = model == current_main;
+            let is_aux = model == current_aux;
+            if is_main && is_aux {
+                spans.push(Span::styled(
+                    " [main+aux]",
+                    Style::default().fg(Color::Magenta),
+                ));
+            } else if is_main {
+                spans.push(Span::styled(" [main]", Style::default().fg(Color::Cyan)));
+            } else if is_aux {
+                spans.push(Span::styled(" [aux]", Style::default().fg(Color::Yellow)));
+            }
+
+            ListItem::new(Line::from(spans))
         })
         .collect();
 
+    // Build title based on selection mode
+    let title = if app.selecting_auxiliary_model {
+        format!(
+            "Select AUXILIARY Model (Main: {}) [a] toggle [l] open app",
+            current_main
+        )
+    } else {
+        format!(
+            "Select MAIN Model (Aux: {}) [a] toggle [l] open app",
+            current_aux
+        )
+    };
+
+    let title_style = if app.selecting_auxiliary_model {
+        Style::default().fg(Color::Yellow)
+    } else {
+        Style::default().fg(Color::Cyan)
+    };
+
     let list = List::new(items)
-        .block(Block::default().borders(Borders::ALL).title("LMStudio Models ([l] to open app)"))
+        .block(
+            Block::default()
+                .borders(Borders::ALL)
+                .title(Span::styled(title, title_style)),
+        )
         .highlight_style(
             Style::default()
                 .bg(Color::DarkGray)

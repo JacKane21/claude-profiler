@@ -1,7 +1,5 @@
 mod app;
-mod backends;
 mod config;
-mod error;
 mod launcher;
 mod lmstudio;
 mod proxy;
@@ -159,9 +157,8 @@ fn run_app(terminal: &mut tui::Tui, app: &mut App) -> Result<Option<Profile>> {
                             KeyCode::Down | KeyCode::Char('j') => Some(Action::MoveDown),
                             KeyCode::Enter => Some(Action::SelectProfile),
                             KeyCode::Char('l') => Some(Action::OpenLMStudio),
-                            KeyCode::Char('r') => {
-                                Some(Action::SelectLMStudio)
-                            }
+                            KeyCode::Char('r') => Some(Action::SelectLMStudio),
+                            KeyCode::Char('a') => Some(Action::ToggleAuxiliarySelection),
                             _ => None,
                         },
                     };
