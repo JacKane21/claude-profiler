@@ -24,13 +24,14 @@ pub use profile_list::render_profile_list;
 
 /// Main UI rendering function
 pub fn render(frame: &mut Frame, app: &mut App) {
+    let title_height = title_height_for_width(frame.area().width, frame.area().height);
     let chunks = Layout::default()
         .direction(Direction::Vertical)
         .constraints([
-            Constraint::Length(3), // Title
-            Constraint::Min(8),    // Profile list
-            Constraint::Length(7), // Details panel
-            Constraint::Length(3), // Footer
+            Constraint::Length(title_height), // Title
+            Constraint::Min(4),    // Profile list (reduced from 8 to allow more room)
+            Constraint::Length(8), // Details panel (slightly increased to ensure it fits its title/content)
+            Constraint::Length(2), // Footer
         ])
         .split(frame.area());
 
@@ -63,12 +64,77 @@ pub fn render(frame: &mut Frame, app: &mut App) {
     }
 }
 
+fn title_height_for_width(_w: u16, _h: u16) -> u16 {
+    15 // 6 CLAUDE with shadow + 1 spacer + 6 PROFILER with shadow + 1 spacer + 1 version
+}
+
 fn render_title(frame: &mut Frame, area: Rect) {
-    let title = Paragraph::new(Line::from(vec![
-        Span::styled("ClaudeProfiler", Style::default().fg(Color::Cyan)),
-        Span::raw(" v0.1.0"),
-    ]))
-    .block(Block::default().borders(Borders::ALL));
+    // Block art with integrated shadow using box-drawing characters (cfonts style)
+    // Main blocks use █, shadow/depth uses ░ positioned to create 3D effect
+    let claude = [
+        "░█████╗░██╗░░░░░░█████╗░██╗░░░██╗██████╗░███████╗",
+        "██╔══██╗██║░░░░░██╔══██╗██║░░░██║██╔══██╗██╔════╝",
+        "██║░░╚═╝██║░░░░░███████║██║░░░██║██║░░██║█████╗░░",
+        "██║░░██╗██║░░░░░██╔══██║██║░░░██║██║░░██║██╔══╝░░",
+        "╚█████╔╝███████╗██║░░██║╚██████╔╝██████╔╝███████╗",
+        "░╚════╝░╚══════╝╚═╝░░╚═╝░╚═════╝░╚═════╝░╚══════╝",
+    ];
+
+    let profiler = [
+        "██████╗░██████╗░░█████╗░███████╗██╗██╗░░░░░███████╗██████╗░",
+        "██╔══██╗██╔══██╗██╔══██╗██╔════╝██║██║░░░░░██╔════╝██╔══██╗",
+        "██████╔╝██████╔╝██║░░██║█████╗░░██║██║░░░░░█████╗░░██████╔╝",
+        "██╔═══╝░██╔══██╗██║░░██║██╔══╝░░██║██║░░░░░██╔══╝░░██╔══██╗",
+        "██║░░░░░██║░░██║╚█████╔╝██║░░░░░██║███████╗███████╗██║░░██║",
+        "╚═╝░░░░░╚═╝░░╚═╝░╚════╝░╚═╝░░░░░╚═╝╚══════╝╚══════╝╚═╝░░╚═╝",
+    ];
+
+    // Light blue to dark blue gradient
+    let start = (135u8, 206u8, 250u8); // Light sky blue
+    let end = (0u8, 51u8, 153u8); // Dark blue
+
+    fn gradient_line(text: &str, start: (u8, u8, u8), end: (u8, u8, u8)) -> Line<'static> {
+        let chars: Vec<char> = text.chars().collect();
+        let n = chars.len().max(1) as f32;
+        let spans: Vec<Span<'static>> = chars
+            .into_iter()
+            .enumerate()
+            .map(|(i, ch)| {
+                let t = if n <= 1.0 { 0.0 } else { i as f32 / (n - 1.0) };
+                let r = (start.0 as f32 + (end.0 as f32 - start.0 as f32) * t).round() as u8;
+                let g = (start.1 as f32 + (end.1 as f32 - start.1 as f32) * t).round() as u8;
+                let b = (start.2 as f32 + (end.2 as f32 - start.2 as f32) * t).round() as u8;
+                Span::styled(ch.to_string(), Style::default().fg(Color::Rgb(r, g, b)))
+            })
+            .collect();
+        Line::from(spans)
+    }
+
+    let mut result: Vec<Line<'static>> = Vec::new();
+
+    // CLAUDE
+    for line in &claude {
+        result.push(gradient_line(line, start, end));
+    }
+
+    // Spacer
+    result.push(Line::from(""));
+
+    // PROFILER
+    for line in &profiler {
+        result.push(gradient_line(line, start, end));
+    }
+
+    // Spacer and version
+    result.push(Line::from(""));
+    result.push(Line::from(Span::styled(
+        "v0.1.0",
+        Style::default().fg(Color::DarkGray),
+    )));
+
+    let title = Paragraph::new(result)
+        .alignment(ratatui::layout::Alignment::Center)
+        .block(Block::default());
     frame.render_widget(title, area);
 }
 
@@ -107,7 +173,7 @@ fn render_details(frame: &mut Frame, app: &App, area: Rect) {
 
     let details = Paragraph::new(content).block(
         Block::default()
-            .borders(Borders::ALL)
+            .borders(Borders::TOP)
             .title("Environment Variables"),
     );
     frame.render_widget(details, area);
@@ -195,7 +261,7 @@ fn render_footer(frame: &mut Frame, area: Rect, app: &App) {
         }
     };
 
-    let footer = Paragraph::new(footer_text).block(Block::default().borders(Borders::ALL));
+    let footer = Paragraph::new(footer_text).block(Block::default().borders(Borders::TOP));
     frame.render_widget(footer, area);
 }
 
@@ -442,7 +508,7 @@ fn render_lmstudio_model_list(frame: &mut Frame, app: &mut App, area: Rect) {
     let list = List::new(items)
         .block(
             Block::default()
-                .borders(Borders::ALL)
+                .borders(Borders::TOP)
                 .title(Span::styled(title, title_style)),
         )
         .highlight_style(

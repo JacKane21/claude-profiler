@@ -27,7 +27,7 @@ pub fn render_profile_list(frame: &mut Frame, app: &mut App, area: Rect) {
         .collect();
 
     let list = List::new(items)
-        .block(Block::default().borders(Borders::ALL).title("Profiles"))
+        .block(Block::default().borders(Borders::TOP).title("Profiles"))
         .highlight_style(
             Style::default()
                 .bg(Color::DarkGray)
