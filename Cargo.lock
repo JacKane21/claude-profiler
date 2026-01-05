@@ -3,26 +3,6 @@
 version = 4
 
 [[package]]
-name = "ClaudeProfiler"
-version = "0.1.0"
-dependencies = [
- "anyhow",
- "async-stream",
- "axum",
- "bytes",
- "crossterm",
- "dirs",
- "futures",
- "ratatui",
- "reqwest",
- "serde",
- "serde_json",
- "tokio",
- "toml",
- "tui-input",
-]
-
-[[package]]
 name = "allocator-api2"
 version = "0.2.21"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -168,6 +148,26 @@ name = "cfg-if"
 version = "1.0.4"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "9330f8b2ff13f34540b44e946ef35111825727b38d33286ef986142615121801"
+
+[[package]]
+name = "claude-profiler"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "async-stream",
+ "axum",
+ "bytes",
+ "crossterm",
+ "dirs",
+ "futures",
+ "ratatui",
+ "reqwest",
+ "serde",
+ "serde_json",
+ "tokio",
+ "toml",
+ "tui-input",
+]
 
 [[package]]
 name = "compact_str"

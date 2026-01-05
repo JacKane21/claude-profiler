@@ -1,7 +1,12 @@
 [package]
-name = "ClaudeProfiler"
+name = "claude-profiler"
 version = "0.1.0"
 edition = "2024"
+description = "TUI profile launcher for Claude Code with LM Studio proxy support"
+license = "MIT"
+readme = "README.md"
+keywords = ["claude", "tui", "lmstudio", "anthropic"]
+categories = ["command-line-utilities"]
 
 [dependencies]
 ratatui = "0.29"

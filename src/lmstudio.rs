@@ -21,7 +21,7 @@ pub fn list_local_models() -> Result<Vec<String>> {
     let response = client
         .get("http://localhost:1234/v1/models")
         .send()
-        .context("Failed to connect to LMStudio. Is the server running?")?
+        .context("Failed to connect to LMStudio. Is it running? Download from https://lmstudio.ai")?
         .error_for_status()
         .context("LMStudio returned an error response")?;
 

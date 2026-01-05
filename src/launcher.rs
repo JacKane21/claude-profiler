@@ -99,7 +99,11 @@ fn install_lms_cli() -> Result<bool> {
     if !bootstrap_path.exists() {
         println!();
         println!("The LM Studio CLI bootstrap binary was not found.");
-        println!("Please run LM Studio at least once to install it.");
+        println!();
+        println!("If you haven't installed LM Studio, download it from:");
+        println!("  https://lmstudio.ai");
+        println!();
+        println!("If already installed, please run LM Studio at least once to set up the CLI.");
         println!();
         return Ok(false);
     }
