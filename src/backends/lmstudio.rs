@@ -13,10 +13,12 @@ use tokio::time::{sleep, Duration};
 use super::{BackendType, LocalModel, ModelBackend};
 
 /// LMStudio backend for running local models
+#[allow(dead_code)]
 pub struct LMStudioBackend {
     host: String,
 }
 
+#[allow(dead_code)]
 impl LMStudioBackend {
     pub fn new(host: String) -> Self {
         Self { host }
@@ -71,17 +73,19 @@ impl LMStudioBackend {
 }
 
 /// Response from LMStudio /v1/models endpoint (OpenAI format)
+#[allow(dead_code)]
 #[derive(Debug, Deserialize)]
 struct LMStudioModelsResponse {
     data: Vec<LMStudioModelEntry>,
 }
 
+#[allow(dead_code)]
 #[derive(Debug, Deserialize)]
 struct LMStudioModelEntry {
     id: String,
 }
 
-/// Model entry from lms ps --json output
+#[allow(dead_code)]
 #[derive(Debug, Deserialize)]
 struct LMStudioPsModel {
     #[serde(default)]

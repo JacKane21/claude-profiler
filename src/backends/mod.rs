@@ -5,6 +5,7 @@
 
 pub mod lmstudio;
 
+#[allow(unused_imports)]
 pub use lmstudio::LMStudioBackend;
 
 use anyhow::Result;
@@ -54,6 +55,7 @@ pub struct LocalModel {
 
 impl LocalModel {
     /// Format size as human-readable string
+    #[allow(dead_code)]
     pub fn size_display(&self) -> String {
         match self.size {
             Some(bytes) => {

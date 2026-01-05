@@ -6,6 +6,7 @@ use crate::config::{
     Config, ENV_AUTH_TOKEN, ENV_BASE_URL, ENV_DEFAULT_HAIKU_MODEL, ENV_DEFAULT_OPUS_MODEL,
     ENV_DEFAULT_SONNET_MODEL, ENV_MODEL, Profile,
 };
+use crate::proxy;
 
 /// Possible application actions from user input
 #[derive(Debug, Clone, PartialEq)]
@@ -142,10 +143,11 @@ impl App {
                 if let Some(i) = self.lmstudio_list_state.selected() {
                     if let Some(model_name) = self.lmstudio_models.get(i).cloned() {
                         // Create the environment for the selected LMStudio model
+                        // Point to our built-in proxy
                         let mut env = HashMap::new();
                         env.insert(
                             ENV_BASE_URL.to_string(),
-                            "http://localhost:1234/v1".to_string(),
+                            proxy::PROXY_ANTHROPIC_URL.to_string(),
                         );
                         env.insert(ENV_AUTH_TOKEN.to_string(), "lmstudio".to_string());
 

@@ -1,8 +1,10 @@
 mod app;
+mod backends;
 mod config;
 mod error;
 mod launcher;
 mod lmstudio;
+mod proxy;
 mod tui;
 mod ui;
 
