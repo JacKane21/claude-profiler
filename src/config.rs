@@ -42,10 +42,8 @@ pub struct Config {
 }
 
 impl Config {
-    /// Returns the default config directory path
-    /// On macOS: ~/Library/Application Support/claude-profiler
-    /// On Linux: ~/.config/claude-profiler
-    /// On Windows: C:\Users\<user>\AppData\Roaming\claude-profiler
+    /// Returns the default config directory path (macOS)
+    /// ~/Library/Application Support/claude-profiler
     pub fn config_dir() -> Option<PathBuf> {
         dirs::config_dir().map(|p| p.join("claude-profiler"))
     }
