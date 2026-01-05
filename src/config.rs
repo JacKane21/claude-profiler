@@ -165,7 +165,8 @@ impl Config {
                 },
                 Profile {
                     name: "lmstudio".to_string(),
-                    description: "Local models via LMStudio (press 'l' to select model)".to_string(),
+                    description: "Local models via LMStudio (press 'l' to select model)"
+                        .to_string(),
                     env: HashMap::new(),
                 },
             ],
@@ -182,5 +183,29 @@ impl Config {
         } else {
             0
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn default_profile_index_uses_named_default() {
+        let config = Config::create_default();
+        assert_eq!(config.default_profile_index(), 0);
+    }
+
+    #[test]
+    fn default_profile_index_falls_back_when_missing() {
+        let config = Config {
+            profiles: vec![Profile {
+                name: "first".to_string(),
+                description: String::new(),
+                env: HashMap::new(),
+            }],
+            default_profile: Some("missing".to_string()),
+        };
+        assert_eq!(config.default_profile_index(), 0);
     }
 }

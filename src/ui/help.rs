@@ -55,7 +55,25 @@ pub fn render_help_popup(frame: &mut Frame, area: Rect) {
                     .fg(Color::Cyan)
                     .add_modifier(Modifier::BOLD),
             ),
-            Span::raw("Edit profile API key/URL"),
+            Span::raw("Edit selected profile"),
+        ]),
+        Line::from(vec![
+            Span::styled(
+                "  n  ",
+                Style::default()
+                    .fg(Color::Cyan)
+                    .add_modifier(Modifier::BOLD),
+            ),
+            Span::raw("Create new profile"),
+        ]),
+        Line::from(vec![
+            Span::styled(
+                "  d  ",
+                Style::default()
+                    .fg(Color::Cyan)
+                    .add_modifier(Modifier::BOLD),
+            ),
+            Span::raw("Delete selected profile"),
         ]),
         Line::from(vec![
             Span::styled(
@@ -64,7 +82,16 @@ pub fn render_help_popup(frame: &mut Frame, area: Rect) {
                     .fg(Color::Cyan)
                     .add_modifier(Modifier::BOLD),
             ),
-            Span::raw("Reset configuration to defaults"),
+            Span::raw("Reset selected profile to defaults"),
+        ]),
+        Line::from(vec![
+            Span::styled(
+                "  R  ",
+                Style::default()
+                    .fg(Color::Cyan)
+                    .add_modifier(Modifier::BOLD),
+            ),
+            Span::raw("Reset ALL profiles to defaults"),
         ]),
         Line::from(vec![
             Span::styled(

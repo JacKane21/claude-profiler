@@ -6,7 +6,7 @@ use std::time::Duration;
 use anyhow::Result;
 use serde::Deserialize;
 
-use crate::config::{Profile, ENV_BASE_URL, ENV_MODEL, ENV_SMALL_FAST_MODEL};
+use crate::config::{ENV_BASE_URL, ENV_MODEL, ENV_SMALL_FAST_MODEL, Profile};
 use crate::proxy;
 
 /// Check if this profile requires the proxy (i.e., it's an lmstudio profile)
@@ -15,7 +15,7 @@ fn needs_proxy(profile: &Profile) -> bool {
         && profile
             .env
             .get(ENV_BASE_URL)
-            .map_or(false, |url| url.contains(&proxy::PROXY_PORT.to_string()))
+            .is_some_and(|url| url.contains(&proxy::PROXY_PORT.to_string()))
 }
 
 /// Spinner characters for visual feedback
@@ -63,10 +63,10 @@ fn find_lms_binary() -> Option<std::path::PathBuf> {
 }
 
 fn model_matches_loaded(model: &str, loaded: &LmstudioPsModel) -> bool {
-    if let Some(identifier) = loaded.identifier.as_deref() {
-        if identifier == model {
-            return true;
-        }
+    if let Some(identifier) = loaded.identifier.as_deref()
+        && identifier == model
+    {
+        return true;
     }
     if loaded.path == model {
         return true;
@@ -113,9 +113,7 @@ fn install_lms_cli() -> Result<bool> {
     println!("Running: {} bootstrap", bootstrap_path.display());
     println!();
 
-    let status = Command::new(&bootstrap_path)
-        .arg("bootstrap")
-        .status()?;
+    let status = Command::new(&bootstrap_path).arg("bootstrap").status()?;
 
     if status.success() {
         println!("LM Studio CLI installed successfully!");
@@ -275,12 +273,12 @@ pub fn exec_claude(profile: &Profile) -> Result<()> {
         }
 
         // Load the auxiliary model if configured and different from main
-        if let Some(ref aux_model) = auxiliary_model {
-            if aux_model != &model {
-                println!("Loading auxiliary model: {}", aux_model);
-                if let Some(info) = load_lmstudio_model(aux_model)? {
-                    unload_infos.push(info);
-                }
+        if let Some(ref aux_model) = auxiliary_model
+            && aux_model != &model
+        {
+            println!("Loading auxiliary model: {}", aux_model);
+            if let Some(info) = load_lmstudio_model(aux_model)? {
+                unload_infos.push(info);
             }
         }
 
@@ -311,14 +309,11 @@ pub fn exec_claude(profile: &Profile) -> Result<()> {
         let health_url = format!("http://localhost:{}/health", proxy::PROXY_PORT);
 
         while start.elapsed() < timeout {
-            match client.get(&health_url).send() {
-                Ok(resp) => {
-                    if resp.status().is_success() {
-                        println!("\r{} Proxy started!        ", SPINNER_CHARS[spinner_idx]);
-                        break;
-                    }
-                }
-                Err(_) => {}
+            if let Ok(resp) = client.get(&health_url).send()
+                && resp.status().is_success()
+            {
+                println!("\r{} Proxy started!        ", SPINNER_CHARS[spinner_idx]);
+                break;
             }
 
             print!("\r{} Starting proxy...", SPINNER_CHARS[spinner_idx]);
@@ -353,4 +348,38 @@ pub fn exec_claude(profile: &Profile) -> Result<()> {
     }
 
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::collections::HashMap;
+
+    #[test]
+    fn needs_proxy_detects_lmstudio_profile() {
+        let mut env = HashMap::new();
+        env.insert(
+            ENV_BASE_URL.to_string(),
+            format!("http://localhost:{}/anthropic", proxy::PROXY_PORT),
+        );
+        let profile = Profile {
+            name: "lmstudio".to_string(),
+            description: String::new(),
+            env,
+        };
+
+        assert!(needs_proxy(&profile));
+    }
+
+    #[test]
+    fn model_matches_loaded_prefers_identifier_or_path() {
+        let loaded = LmstudioPsModel {
+            path: "/models/mistral-7b".to_string(),
+            identifier: Some("mistral-7b".to_string()),
+        };
+        assert!(model_matches_loaded("mistral-7b", &loaded));
+        assert!(model_matches_loaded("/models/mistral-7b", &loaded));
+        assert!(model_matches_loaded("mistral", &loaded));
+        assert!(!model_matches_loaded("llama", &loaded));
+    }
 }

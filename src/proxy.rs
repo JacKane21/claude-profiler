@@ -5,12 +5,12 @@
 
 use anyhow::Result;
 use axum::{
+    Json, Router,
     body::Body,
     extract::State,
-    http::{header, StatusCode},
+    http::{StatusCode, header},
     response::{IntoResponse, Response},
     routing::{get, post},
-    Json, Router,
 };
 use futures::stream::Stream;
 use serde::{Deserialize, Serialize};
@@ -373,16 +373,17 @@ fn convert_anthropic_message(msg: &AnthropicMessage) -> Vec<ResponseInputItem> {
             let mut items = Vec::new();
             let mut content_parts = Vec::new();
 
-            let flush_message = |items: &mut Vec<ResponseInputItem>,
-                                 content_parts: &mut Vec<ResponseInputContentPart>| {
-                if !content_parts.is_empty() {
-                    let parts = std::mem::take(content_parts);
-                    items.push(ResponseInputItem::Message {
-                        role: msg.role.clone(),
-                        content: parts,
-                    });
-                }
-            };
+            let flush_message =
+                |items: &mut Vec<ResponseInputItem>,
+                 content_parts: &mut Vec<ResponseInputContentPart>| {
+                    if !content_parts.is_empty() {
+                        let parts = std::mem::take(content_parts);
+                        items.push(ResponseInputItem::Message {
+                            role: msg.role.clone(),
+                            content: parts,
+                        });
+                    }
+                };
 
             for block in blocks {
                 match block {
@@ -395,8 +396,7 @@ fn convert_anthropic_message(msg: &AnthropicMessage) -> Vec<ResponseInputItem> {
                         content_parts.push(part);
                     }
                     ContentBlock::Image { source } => {
-                        let data_url =
-                            format!("data:{};base64,{}", source.media_type, source.data);
+                        let data_url = format!("data:{};base64,{}", source.media_type, source.data);
                         if msg.role != "assistant" {
                             content_parts.push(ResponseInputContentPart::InputImage {
                                 image_url: ResponseImageUrl { url: data_url },
@@ -461,14 +461,13 @@ pub fn responses_to_anthropic(
             }
             if let Some(parts) = item.get("content").and_then(|c| c.as_array()) {
                 for part in parts {
-                    if part.get("type").and_then(|t| t.as_str()) == Some("output_text") {
-                        if let Some(text) = part.get("text").and_then(|t| t.as_str()) {
-                            if !text.is_empty() {
-                                content.push(ResponseContent::Text {
-                                    text: text.to_string(),
-                                });
-                            }
-                        }
+                    if part.get("type").and_then(|t| t.as_str()) == Some("output_text")
+                        && let Some(text) = part.get("text").and_then(|t| t.as_str())
+                        && !text.is_empty()
+                    {
+                        content.push(ResponseContent::Text {
+                            text: text.to_string(),
+                        });
                     }
                 }
             }
@@ -479,27 +478,23 @@ pub fn responses_to_anthropic(
                 .and_then(|c| c.as_str())
                 .or_else(|| item.get("id").and_then(|c| c.as_str()))
                 .unwrap_or("call");
-            let arguments = item
-                .get("arguments")
-                .and_then(|a| a.as_str())
-                .unwrap_or("");
-            let input: Value = serde_json::from_str(arguments).unwrap_or(Value::String(
-                arguments.to_string(),
-            ));
+            let arguments = item.get("arguments").and_then(|a| a.as_str()).unwrap_or("");
+            let input: Value =
+                serde_json::from_str(arguments).unwrap_or(Value::String(arguments.to_string()));
             content.push(ResponseContent::ToolUse {
                 id: call_id.to_string(),
                 name: name.to_string(),
                 input,
             });
-        } else if item_type == "reasoning" && include_thinking {
-            if let Some(thinking) = extract_reasoning_text(item) {
-                if !thinking.is_empty() {
-                    content.push(ResponseContent::Thinking {
-                        thinking,
-                        signature: None,
-                    });
-                }
-            }
+        } else if item_type == "reasoning"
+            && include_thinking
+            && let Some(thinking) = extract_reasoning_text(item)
+            && !thinking.is_empty()
+        {
+            content.push(ResponseContent::Thinking {
+                thinking,
+                signature: None,
+            });
         }
     }
 
@@ -531,10 +526,10 @@ fn extract_reasoning_text(item: &Value) -> Option<String> {
         let mut combined = String::new();
         for part in parts {
             let part_type = part.get("type").and_then(|t| t.as_str()).unwrap_or("");
-            if part_type == "reasoning_text" {
-                if let Some(text) = part.get("text").and_then(|t| t.as_str()) {
-                    combined.push_str(text);
-                }
+            if part_type == "reasoning_text"
+                && let Some(text) = part.get("text").and_then(|t| t.as_str())
+            {
+                combined.push_str(text);
             }
         }
         if !combined.is_empty() {
@@ -542,10 +537,10 @@ fn extract_reasoning_text(item: &Value) -> Option<String> {
         }
     }
 
-    if let Some(summary) = item.get("summary").and_then(|s| s.as_str()) {
-        if !summary.is_empty() {
-            return Some(summary.to_string());
-        }
+    if let Some(summary) = item.get("summary").and_then(|s| s.as_str())
+        && !summary.is_empty()
+    {
+        return Some(summary.to_string());
     }
 
     None
@@ -578,10 +573,10 @@ fn is_auxiliary_request(request: &AnthropicRequest) -> bool {
         match &msg.content {
             AnthropicContent::Blocks(blocks) => {
                 for block in blocks {
-                    if let ContentBlock::Text { text } = block {
-                        if text.contains("[SUGGESTION MODE:") {
-                            return true;
-                        }
+                    if let ContentBlock::Text { text } = block
+                        && text.contains("[SUGGESTION MODE:")
+                    {
+                        return true;
                     }
                 }
             }
@@ -595,26 +590,25 @@ fn is_auxiliary_request(request: &AnthropicRequest) -> bool {
 
     // Check for JSON prefill (assistant starts with '{' without tools)
     // This indicates structured output parsing which is typically lightweight
-    let has_no_tools = request.tools.is_none()
-        || request.tools.as_ref().map(|t| t.is_empty()).unwrap_or(true);
+    let has_no_tools =
+        request.tools.is_none() || request.tools.as_ref().map(|t| t.is_empty()).unwrap_or(true);
 
-    if has_no_tools {
-        if let Some(last_msg) = request.messages.last() {
-            if last_msg.role == "assistant" {
-                let starts_with_brace = match &last_msg.content {
-                    AnthropicContent::Text(text) => text.trim_start().starts_with('{'),
-                    AnthropicContent::Blocks(blocks) => blocks.iter().any(|b| {
-                        if let ContentBlock::Text { text } = b {
-                            text.trim_start().starts_with('{')
-                        } else {
-                            false
-                        }
-                    }),
-                };
-                if starts_with_brace {
-                    return true;
+    if has_no_tools
+        && let Some(last_msg) = request.messages.last()
+        && last_msg.role == "assistant"
+    {
+        let starts_with_brace = match &last_msg.content {
+            AnthropicContent::Text(text) => text.trim_start().starts_with('{'),
+            AnthropicContent::Blocks(blocks) => blocks.iter().any(|b| {
+                if let ContentBlock::Text { text } = b {
+                    text.trim_start().starts_with('{')
+                } else {
+                    false
                 }
-            }
+            }),
+        };
+        if starts_with_brace {
+            return true;
         }
     }
 
@@ -624,7 +618,10 @@ fn is_auxiliary_request(request: &AnthropicRequest) -> bool {
 /// Start the proxy server
 pub async fn start_server(lmstudio_model: String, auxiliary_model: Option<String>) -> Result<()> {
     if let Some(ref aux) = auxiliary_model {
-        eprintln!("Proxy: Using auxiliary model '{}' for lightweight requests", aux);
+        eprintln!(
+            "Proxy: Using auxiliary model '{}' for lightweight requests",
+            aux
+        );
     }
 
     let state = Arc::new(ProxyState {
@@ -718,7 +715,8 @@ async fn handle_non_streaming_request(
                 let status = resp.status();
                 let body = resp.text().await.unwrap_or_default();
                 return (
-                    StatusCode::from_u16(status.as_u16()).unwrap_or(StatusCode::INTERNAL_SERVER_ERROR),
+                    StatusCode::from_u16(status.as_u16())
+                        .unwrap_or(StatusCode::INTERNAL_SERVER_ERROR),
                     body,
                 )
                     .into_response();
@@ -730,10 +728,11 @@ async fn handle_non_streaming_request(
                         responses_to_anthropic(&openai_resp, &original_model, include_thinking);
                     Json(anthropic_resp).into_response()
                 }
-                Err(e) => {
-                    (StatusCode::INTERNAL_SERVER_ERROR, format!("Parse error: {}", e))
-                        .into_response()
-                }
+                Err(e) => (
+                    StatusCode::INTERNAL_SERVER_ERROR,
+                    format!("Parse error: {}", e),
+                )
+                    .into_response(),
             }
         }
         Err(e) => (
@@ -765,7 +764,8 @@ async fn handle_streaming_request(
                 let status = resp.status();
                 let body = resp.text().await.unwrap_or_default();
                 return (
-                    StatusCode::from_u16(status.as_u16()).unwrap_or(StatusCode::INTERNAL_SERVER_ERROR),
+                    StatusCode::from_u16(status.as_u16())
+                        .unwrap_or(StatusCode::INTERNAL_SERVER_ERROR),
                     body,
                 )
                     .into_response();
@@ -846,20 +846,20 @@ fn create_anthropic_stream(
                                 if let Some(start) = state.ensure_message_started(&msg_id, &model) {
                                     yield Ok(start);
                                 }
-                                if let Some(content) = event.get("delta").and_then(|d| d.as_str()) {
-                                    if !content.is_empty() {
-                                        if let Some(stop) = state.close_thinking_block() {
-                                            yield Ok(stop);
-                                        }
-                                        if let Some(start) = state.ensure_text_block_started() {
-                                            yield Ok(start);
-                                        }
+                                if let Some(content) = event.get("delta").and_then(|d| d.as_str())
+                                    && !content.is_empty()
+                                {
+                                    if let Some(stop) = state.close_thinking_block() {
+                                        yield Ok(stop);
+                                    }
+                                    if let Some(start) = state.ensure_text_block_started() {
+                                        yield Ok(start);
+                                    }
 
-                                        state.output_tokens += 1;
-                                        let escaped = escape_json_string(content);
-                                        if let Some(index) = state.text_block_index {
-                                            yield Ok(event_text_delta(index, &escaped));
-                                        }
+                                    state.output_tokens += 1;
+                                    let escaped = escape_json_string(content);
+                                    if let Some(index) = state.text_block_index {
+                                        yield Ok(event_text_delta(index, &escaped));
                                     }
                                 }
                             }
@@ -867,17 +867,17 @@ fn create_anthropic_stream(
                                 if let Some(start) = state.ensure_message_started(&msg_id, &model) {
                                     yield Ok(start);
                                 }
-                                if let Some(reasoning) = event.get("delta").and_then(|d| d.as_str()) {
-                                    if !reasoning.is_empty() {
-                                        if let Some(start) = state.ensure_thinking_block_started() {
-                                            yield Ok(start);
-                                        }
-                                        if state.thinking_block_open {
-                                            state.output_tokens += 1;
-                                            let escaped = escape_json_string(reasoning);
-                                            if let Some(index) = state.thinking_block_index {
-                                                yield Ok(event_thinking_delta(index, &escaped));
-                                            }
+                                if let Some(reasoning) = event.get("delta").and_then(|d| d.as_str())
+                                    && !reasoning.is_empty()
+                                {
+                                    if let Some(start) = state.ensure_thinking_block_started() {
+                                        yield Ok(start);
+                                    }
+                                    if state.thinking_block_open {
+                                        state.output_tokens += 1;
+                                        let escaped = escape_json_string(reasoning);
+                                        if let Some(index) = state.thinking_block_index {
+                                            yield Ok(event_thinking_delta(index, &escaped));
                                         }
                                     }
                                 }
@@ -887,31 +887,35 @@ fn create_anthropic_stream(
                                     yield Ok(start);
                                 }
 
-                                if let Some(output_index) = output_index(&event) {
-                                    if let Some(item) = event.get("item") {
-                                        let item_type = item.get("type").and_then(|t| t.as_str()).unwrap_or("");
-                                        if item_type == "function_call" {
-                                            state.capture_tool_metadata(output_index, item);
-                                            if let Some(start) = state.ensure_tool_block_open(output_index) {
-                                                yield Ok(start);
-                                            }
-                                            let block_index = state.tool_block_index(output_index);
+                                if let Some(output_index) = output_index(&event)
+                                    && let Some(item) = event.get("item")
+                                {
+                                    let item_type =
+                                        item.get("type").and_then(|t| t.as_str()).unwrap_or("");
+                                    if item_type == "function_call" {
+                                        state.capture_tool_metadata(output_index, item);
+                                        if let Some(start) = state.ensure_tool_block_open(output_index)
+                                        {
+                                            yield Ok(start);
+                                        }
+                                        let block_index = state.tool_block_index(output_index);
 
-                                            if let Some(arguments) = item.get("arguments").and_then(|v| v.as_str()) {
-                                                if !arguments.is_empty() {
-                                                    let escaped = escape_json_string(arguments);
-                                                    yield Ok(event_tool_args_delta(block_index, &escaped));
-                                                    state.tool_args_emitted.insert(output_index);
-                                                }
-                                            }
+                                        if let Some(arguments) =
+                                            item.get("arguments").and_then(|v| v.as_str())
+                                            && !arguments.is_empty()
+                                        {
+                                            let escaped = escape_json_string(arguments);
+                                            yield Ok(event_tool_args_delta(block_index, &escaped));
+                                            state.tool_args_emitted.insert(output_index);
+                                        }
 
-                                            if let Some(pending) = state.pending_tool_args.remove(&output_index) {
-                                                if !pending.is_empty() {
-                                                    let escaped = escape_json_string(&pending);
-                                                    yield Ok(event_tool_args_delta(block_index, &escaped));
-                                                    state.tool_args_emitted.insert(output_index);
-                                                }
-                                            }
+                                        if let Some(pending) =
+                                            state.pending_tool_args.remove(&output_index)
+                                            && !pending.is_empty()
+                                        {
+                                            let escaped = escape_json_string(&pending);
+                                            yield Ok(event_tool_args_delta(block_index, &escaped));
+                                            state.tool_args_emitted.insert(output_index);
                                         }
                                     }
                                 }
@@ -920,25 +924,30 @@ fn create_anthropic_stream(
                                 if let Some(start) = state.ensure_message_started(&msg_id, &model) {
                                     yield Ok(start);
                                 }
-                                if let (Some(output_index), Some(delta)) = (output_index(&event), event.get("delta").and_then(|d| d.as_str())) {
-                                    if !delta.is_empty() {
-                                        if let Some(block_index) = state.tool_block_indices.get(&output_index) {
-                                            if state.tool_blocks_open.contains(&output_index) {
-                                                let escaped = escape_json_string(delta);
-                                                yield Ok(event_tool_args_delta(*block_index, &escaped));
-                                                state.tool_args_emitted.insert(output_index);
-                                            } else {
-                                                state.pending_tool_args
-                                                    .entry(output_index)
-                                                    .and_modify(|s| s.push_str(delta))
-                                                    .or_insert_with(|| delta.to_string());
-                                            }
+                                if let (Some(output_index), Some(delta)) = (
+                                    output_index(&event),
+                                    event.get("delta").and_then(|d| d.as_str()),
+                                )
+                                    && !delta.is_empty()
+                                {
+                                    if let Some(block_index) =
+                                        state.tool_block_indices.get(&output_index)
+                                    {
+                                        if state.tool_blocks_open.contains(&output_index) {
+                                            let escaped = escape_json_string(delta);
+                                            yield Ok(event_tool_args_delta(*block_index, &escaped));
+                                            state.tool_args_emitted.insert(output_index);
                                         } else {
                                             state.pending_tool_args
                                                 .entry(output_index)
                                                 .and_modify(|s| s.push_str(delta))
                                                 .or_insert_with(|| delta.to_string());
                                         }
+                                    } else {
+                                        state.pending_tool_args
+                                            .entry(output_index)
+                                            .and_modify(|s| s.push_str(delta))
+                                            .or_insert_with(|| delta.to_string());
                                     }
                                 }
                             }
@@ -953,20 +962,21 @@ fn create_anthropic_stream(
                                     }
                                     let block_index = state.tool_block_index(output_index);
 
-                                    if !state.tool_args_emitted.contains(&output_index) {
-                                        if let Some(arguments) = event.get("arguments").and_then(|a| a.as_str()) {
-                                            if !arguments.is_empty() {
-                                                let escaped = escape_json_string(arguments);
-                                                yield Ok(event_tool_args_delta(block_index, &escaped));
-                                            }
-                                        }
+                                    if !state.tool_args_emitted.contains(&output_index)
+                                        && let Some(arguments) =
+                                            event.get("arguments").and_then(|a| a.as_str())
+                                        && !arguments.is_empty()
+                                    {
+                                        let escaped = escape_json_string(arguments);
+                                        yield Ok(event_tool_args_delta(block_index, &escaped));
                                     }
 
-                                    if let Some(pending) = state.pending_tool_args.remove(&output_index) {
-                                        if !pending.is_empty() {
-                                            let escaped = escape_json_string(&pending);
-                                            yield Ok(event_tool_args_delta(block_index, &escaped));
-                                        }
+                                    if let Some(pending) =
+                                        state.pending_tool_args.remove(&output_index)
+                                        && !pending.is_empty()
+                                    {
+                                        let escaped = escape_json_string(&pending);
+                                        yield Ok(event_tool_args_delta(block_index, &escaped));
                                     }
                                 }
                             }
@@ -1179,11 +1189,14 @@ impl StreamState {
     }
 
     fn tool_block_index(&mut self, output_index: u32) -> usize {
-        *self.tool_block_indices.entry(output_index).or_insert_with(|| {
-            let index = self.next_block_index;
-            self.next_block_index += 1;
-            index
-        })
+        *self
+            .tool_block_indices
+            .entry(output_index)
+            .or_insert_with(|| {
+                let index = self.next_block_index;
+                self.next_block_index += 1;
+                index
+            })
     }
 
     fn capture_tool_metadata(&mut self, output_index: u32, item: &Value) {
@@ -1248,4 +1261,219 @@ fn escape_json_string(s: &str) -> String {
         }
     }
     out
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use bytes::Bytes;
+    use futures::{StreamExt, stream};
+    use serde_json::json;
+
+    fn base_request(messages: Vec<AnthropicMessage>) -> AnthropicRequest {
+        AnthropicRequest {
+            model: "claude".to_string(),
+            messages,
+            max_tokens: None,
+            temperature: None,
+            top_p: None,
+            top_k: None,
+            stop_sequences: None,
+            stream: None,
+            system: None,
+            tools: None,
+            tool_choice: None,
+            thinking: None,
+        }
+    }
+
+    #[test]
+    fn escape_json_string_escapes_control_chars() {
+        let input = "a\"b\\c\n\r\t\u{0001}";
+        let escaped = escape_json_string(input);
+        assert_eq!(escaped, "a\\\"b\\\\c\\n\\r\\t\\u0001");
+    }
+
+    #[test]
+    fn is_auxiliary_request_detects_patterns() {
+        let req = base_request(vec![AnthropicMessage {
+            role: "user".to_string(),
+            content: AnthropicContent::Text("hello".to_string()),
+        }]);
+        assert!(!is_auxiliary_request(&req));
+
+        let req = AnthropicRequest {
+            max_tokens: Some(1),
+            ..base_request(vec![AnthropicMessage {
+                role: "user".to_string(),
+                content: AnthropicContent::Text("hello".to_string()),
+            }])
+        };
+        assert!(is_auxiliary_request(&req));
+
+        let req = base_request(vec![AnthropicMessage {
+            role: "user".to_string(),
+            content: AnthropicContent::Text("[SUGGESTION MODE: ON]".to_string()),
+        }]);
+        assert!(is_auxiliary_request(&req));
+
+        let req = base_request(vec![AnthropicMessage {
+            role: "assistant".to_string(),
+            content: AnthropicContent::Text("{\"ok\":true}".to_string()),
+        }]);
+        assert!(is_auxiliary_request(&req));
+    }
+
+    #[test]
+    fn anthropic_to_responses_maps_system_and_tools() {
+        let req = AnthropicRequest {
+            model: "claude".to_string(),
+            messages: vec![AnthropicMessage {
+                role: "user".to_string(),
+                content: AnthropicContent::Text("hi".to_string()),
+            }],
+            max_tokens: Some(10),
+            temperature: Some(0.5),
+            top_p: Some(0.9),
+            top_k: None,
+            stop_sequences: None,
+            stream: Some(false),
+            system: Some(SystemPrompt::Blocks(vec![
+                SystemBlock {
+                    block_type: "text".to_string(),
+                    text: "sys1".to_string(),
+                },
+                SystemBlock {
+                    block_type: "text".to_string(),
+                    text: "sys2".to_string(),
+                },
+            ])),
+            tools: Some(vec![json!({
+                "name": "tool1",
+                "description": "desc",
+                "input_schema": {"type": "object"}
+            })]),
+            tool_choice: Some(json!("auto")),
+            thinking: Some(ThinkingConfig::Enabled {
+                budget_tokens: Some(1500),
+            }),
+        };
+
+        let mapped = anthropic_to_responses(&req, "target");
+        assert_eq!(mapped.model, "target");
+        assert_eq!(mapped.instructions.as_deref(), Some("sys1\nsys2"));
+        assert_eq!(mapped.max_output_tokens, Some(10));
+        assert_eq!(mapped.temperature, Some(0.5));
+        assert_eq!(mapped.top_p, Some(0.9));
+
+        let tools = mapped.tools.expect("tools mapped");
+        assert_eq!(tools.len(), 1);
+        match &tools[0] {
+            ResponseTool::Function {
+                name,
+                description,
+                parameters,
+            } => {
+                assert_eq!(name, "tool1");
+                assert_eq!(description.as_deref(), Some("desc"));
+                assert!(parameters.is_some());
+            }
+            _ => panic!("unexpected tool type"),
+        }
+
+        let reasoning = mapped.reasoning.expect("reasoning mapped");
+        assert_eq!(reasoning.effort.as_deref(), Some("medium"));
+    }
+
+    #[test]
+    fn responses_to_anthropic_maps_text_and_tool() {
+        let resp = ResponsesResponse {
+            id: "resp_1".to_string(),
+            model: "gpt".to_string(),
+            output: vec![
+                json!({
+                    "type": "message",
+                    "role": "assistant",
+                    "content": [{"type": "output_text", "text": "hello"}]
+                }),
+                json!({
+                    "type": "function_call",
+                    "name": "tool",
+                    "call_id": "call_1",
+                    "arguments": "{\"x\":1}"
+                }),
+            ],
+            usage: Some(json!({"input_tokens": 3, "output_tokens": 5})),
+        };
+
+        let mapped = responses_to_anthropic(&resp, "orig", false);
+        assert_eq!(mapped.model, "orig");
+        assert_eq!(mapped.usage.input_tokens, 3);
+        assert_eq!(mapped.usage.output_tokens, 5);
+        assert_eq!(mapped.content.len(), 2);
+
+        match &mapped.content[0] {
+            ResponseContent::Text { text } => assert_eq!(text, "hello"),
+            _ => panic!("expected text content"),
+        }
+
+        match &mapped.content[1] {
+            ResponseContent::ToolUse { id, name, input } => {
+                assert_eq!(id, "call_1");
+                assert_eq!(name, "tool");
+                assert!(input.is_object());
+            }
+            _ => panic!("expected tool_use content"),
+        }
+    }
+
+    #[test]
+    fn extract_reasoning_text_prefers_content_then_summary() {
+        let item = json!({
+            "content": [{"type": "reasoning_text", "text": "thinking"}]
+        });
+        assert_eq!(extract_reasoning_text(&item).as_deref(), Some("thinking"));
+
+        let item = json!({"summary": "short"});
+        assert_eq!(extract_reasoning_text(&item).as_deref(), Some("short"));
+    }
+
+    #[tokio::test]
+    async fn create_anthropic_stream_emits_text_events() {
+        let payload = concat!(
+            "data: {\"type\":\"response.output_text.delta\",\"delta\":\"Hello\"}\n\n",
+            "data: [DONE]\n\n"
+        );
+        let stream = create_anthropic_stream(
+            stream::iter(vec![Ok(Bytes::from(payload))]),
+            "model".to_string(),
+            false,
+        );
+        let events: Vec<String> = stream.map(|r| r.unwrap()).collect().await;
+
+        assert!(events.iter().any(|e| e.contains("message_start")));
+        assert!(events.iter().any(|e| e.contains("\"type\":\"text_delta\"")));
+        assert!(events.iter().any(|e| e.contains("Hello")));
+        assert!(events.iter().any(|e| e.contains("message_stop")));
+    }
+
+    #[tokio::test]
+    async fn create_anthropic_stream_emits_tool_events() {
+        let payload = concat!(
+            "data: {\"type\":\"response.output_item.added\",\"output_index\":0,\"item\":{\"type\":\"function_call\",\"call_id\":\"call_1\",\"name\":\"tool\",\"arguments\":\"{\\\"x\\\":1\"}}\n\n",
+            "data: {\"type\":\"response.function_call_arguments.delta\",\"output_index\":0,\"delta\":\"}\"}\n\n",
+            "data: {\"type\":\"response.output_item.done\",\"output_index\":0,\"item\":{\"type\":\"function_call\"}}\n\n",
+            "data: [DONE]\n\n"
+        );
+        let stream = create_anthropic_stream(
+            stream::iter(vec![Ok(Bytes::from(payload))]),
+            "model".to_string(),
+            false,
+        );
+        let events: Vec<String> = stream.map(|r| r.unwrap()).collect().await;
+
+        assert!(events.iter().any(|e| e.contains("\"type\":\"tool_use\"")));
+        assert!(events.iter().any(|e| e.contains("\"type\":\"input_json_delta\"")));
+        assert!(events.iter().any(|e| e.contains("content_block_stop")));
+    }
 }

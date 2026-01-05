@@ -11,8 +11,8 @@ use crossterm::event::{self, Event, KeyCode, KeyEventKind};
 use std::time::{Duration, Instant};
 
 use crate::app::{
-    Action, App, AppMode, EDIT_FIELD_API_KEY, EDIT_FIELD_COUNT, EDIT_FIELD_HAIKU, EDIT_FIELD_OPUS,
-    EDIT_FIELD_SONNET, EDIT_FIELD_URL,
+    Action, App, AppMode, EDIT_FIELD_API_KEY, EDIT_FIELD_COUNT, EDIT_FIELD_DESCRIPTION,
+    EDIT_FIELD_HAIKU, EDIT_FIELD_NAME, EDIT_FIELD_OPUS, EDIT_FIELD_SONNET, EDIT_FIELD_URL,
 };
 use crate::config::{Config, Profile};
 use tui_input::backend::crossterm::EventHandler;
@@ -100,94 +100,101 @@ fn run_app(terminal: &mut tui::Tui, app: &mut App) -> Result<Option<Profile>> {
         }
 
         // Handle input
-        match event::read()? {
-            Event::Key(key) => {
-                if key.kind == KeyEventKind::Press {
-                    // Clear status message on any key press in Normal mode
-                    if app.mode == AppMode::Normal && app.status_message.is_some() {
-                        app.status_message = None;
-                        continue;
+        if let Event::Key(key) = event::read()?
+            && key.kind == KeyEventKind::Press
+        {
+            // Clear status message on any key press in Normal mode
+            if app.mode == AppMode::Normal && app.status_message.is_some() {
+                app.status_message = None;
+                continue;
+            }
+
+            let action = match app.mode {
+                AppMode::Normal => match key.code {
+                    KeyCode::Char('q') | KeyCode::Esc => Some(Action::Quit),
+                    KeyCode::Up | KeyCode::Char('k') => Some(Action::MoveUp),
+                    KeyCode::Down | KeyCode::Char('j') => Some(Action::MoveDown),
+                    KeyCode::Enter => Some(Action::SelectProfile),
+                    KeyCode::Char('?') => Some(Action::ShowHelp),
+                    KeyCode::Char('e') => Some(Action::EditProfile),
+                    KeyCode::Char('n') => Some(Action::CreateProfile),
+                    KeyCode::Char('r') => Some(Action::ResetProfile),
+                    KeyCode::Char('R') => Some(Action::ResetAll),
+                    KeyCode::Char('d') => Some(Action::DeleteProfile),
+                    KeyCode::Char('l') => Some(Action::SelectLMStudio),
+                    _ => None,
+                },
+                AppMode::Help => Some(Action::HideHelp),
+                AppMode::EditProfile {
+                    focused_field,
+                    is_creating,
+                } => match key.code {
+                    KeyCode::Esc => Some(Action::CancelEdit),
+                    KeyCode::Enter => Some(Action::SaveEdit),
+                    KeyCode::Tab | KeyCode::Down => {
+                        app.mode = AppMode::EditProfile {
+                            focused_field: (focused_field + 1) % EDIT_FIELD_COUNT,
+                            is_creating,
+                        };
+                        None
                     }
-
-                    let action = match app.mode {
-                        AppMode::Normal => match key.code {
-                            KeyCode::Char('q') | KeyCode::Esc => Some(Action::Quit),
-                            KeyCode::Up | KeyCode::Char('k') => Some(Action::MoveUp),
-                            KeyCode::Down | KeyCode::Char('j') => Some(Action::MoveDown),
-                            KeyCode::Enter => Some(Action::SelectProfile),
-                            KeyCode::Char('?') => Some(Action::ShowHelp),
-                            KeyCode::Char('e') => Some(Action::EditProfile),
-                            KeyCode::Char('r') => Some(Action::ResetConfig),
-                            KeyCode::Char('l') => Some(Action::SelectLMStudio),
-                            _ => None,
-                        },
-                        AppMode::Help => Some(Action::HideHelp),
-                        AppMode::EditProfile { focused_field } => match key.code {
-                            KeyCode::Esc => Some(Action::CancelEdit),
-                            KeyCode::Enter => Some(Action::SaveEdit),
-                            KeyCode::Tab | KeyCode::Down => {
-                                app.mode = AppMode::EditProfile {
-                                    focused_field: (focused_field + 1) % EDIT_FIELD_COUNT,
-                                };
-                                None
-                            }
-                            KeyCode::BackTab | KeyCode::Up => {
-                                app.mode = AppMode::EditProfile {
-                                    focused_field: focused_field
-                                        .checked_sub(1)
-                                        .unwrap_or(EDIT_FIELD_COUNT - 1),
-                                };
-                                None
-                            }
-                            KeyCode::Char('g')
-                                if key.modifiers.contains(event::KeyModifiers::CONTROL)
-                                    && focused_field == EDIT_FIELD_API_KEY =>
-                            {
-                                app.reveal_api_key = !app.reveal_api_key;
-                                None
-                            }
-                            _ => {
-                                handle_edit_input(app, focused_field, key);
-                                None
-                            }
-                        },
-                        AppMode::LMStudioModelSelection => match key.code {
-                            KeyCode::Char('q') | KeyCode::Esc => Some(Action::BackToProfiles),
-                            KeyCode::Up | KeyCode::Char('k') => Some(Action::MoveUp),
-                            KeyCode::Down | KeyCode::Char('j') => Some(Action::MoveDown),
-                            KeyCode::Enter => Some(Action::SelectProfile),
-                            KeyCode::Char('l') => Some(Action::OpenLMStudio),
-                            KeyCode::Char('r') => Some(Action::SelectLMStudio),
-                            KeyCode::Char('a') => Some(Action::ToggleAuxiliarySelection),
-                            _ => None,
-                        },
-                    };
-
-                    if let Some(action) = action {
-                        let reset_lmstudio_poll_deadline = matches!(action, Action::SelectLMStudio);
-                        app.handle_action(action);
-
-                        if reset_lmstudio_poll_deadline {
-                            next_lmstudio_poll_at = Instant::now() + LMSTUDIO_POLL_INTERVAL;
-                        }
+                    KeyCode::BackTab | KeyCode::Up => {
+                        app.mode = AppMode::EditProfile {
+                            focused_field: focused_field
+                                .checked_sub(1)
+                                .unwrap_or(EDIT_FIELD_COUNT - 1),
+                            is_creating,
+                        };
+                        None
                     }
-
-                    if app.should_quit {
-                        return Ok(None);
+                    KeyCode::Char('g')
+                        if key.modifiers.contains(event::KeyModifiers::CONTROL)
+                            && focused_field == EDIT_FIELD_API_KEY =>
+                    {
+                        app.reveal_api_key = !app.reveal_api_key;
+                        None
                     }
-
-                    if let Some(profile) = app.selected_profile.take() {
-                        return Ok(Some(profile));
+                    _ => {
+                        handle_edit_input(app, focused_field, key);
+                        None
                     }
+                },
+                AppMode::LMStudioModelSelection => match key.code {
+                    KeyCode::Char('q') | KeyCode::Esc => Some(Action::BackToProfiles),
+                    KeyCode::Up | KeyCode::Char('k') => Some(Action::MoveUp),
+                    KeyCode::Down | KeyCode::Char('j') => Some(Action::MoveDown),
+                    KeyCode::Enter => Some(Action::SelectProfile),
+                    KeyCode::Char('l') => Some(Action::OpenLMStudio),
+                    KeyCode::Char('r') => Some(Action::SelectLMStudio),
+                    KeyCode::Char('a') => Some(Action::ToggleAuxiliarySelection),
+                    _ => None,
+                },
+            };
+
+            if let Some(action) = action {
+                let reset_lmstudio_poll_deadline = matches!(action, Action::SelectLMStudio);
+                app.handle_action(action);
+
+                if reset_lmstudio_poll_deadline {
+                    next_lmstudio_poll_at = Instant::now() + LMSTUDIO_POLL_INTERVAL;
                 }
             }
-            _ => {}
+
+            if app.should_quit {
+                return Ok(None);
+            }
+
+            if let Some(profile) = app.selected_profile.take() {
+                return Ok(Some(profile));
+            }
         }
     }
 }
 
 fn handle_edit_input(app: &mut App, focused_field: usize, key: event::KeyEvent) {
     match focused_field {
+        EDIT_FIELD_NAME => app.name_input.handle_event(&Event::Key(key)),
+        EDIT_FIELD_DESCRIPTION => app.description_input.handle_event(&Event::Key(key)),
         EDIT_FIELD_API_KEY => app.api_key_input.handle_event(&Event::Key(key)),
         EDIT_FIELD_URL => app.url_input.handle_event(&Event::Key(key)),
         EDIT_FIELD_HAIKU => app.haiku_model_input.handle_event(&Event::Key(key)),

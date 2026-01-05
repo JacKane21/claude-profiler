@@ -33,6 +33,10 @@ claude-profiler
 - `↑/k`, `↓/j` to move
 - `Enter` to launch
 - `e` to edit the selected profile
+- `n` to create a new profile
+- `d` to delete the selected profile
+- `r` to reset the selected profile
+- `R` to reset ALL profiles
 - `l` to select LM Studio models
 - `?` for help
 - `q` to quit

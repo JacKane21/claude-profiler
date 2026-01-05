@@ -11,8 +11,8 @@ use ratatui::{
 use std::borrow::Cow;
 
 use crate::app::{
-    App, AppMode, EDIT_FIELD_API_KEY, EDIT_FIELD_HAIKU, EDIT_FIELD_OPUS, EDIT_FIELD_SONNET,
-    EDIT_FIELD_URL,
+    App, AppMode, EDIT_FIELD_API_KEY, EDIT_FIELD_DESCRIPTION, EDIT_FIELD_HAIKU, EDIT_FIELD_NAME,
+    EDIT_FIELD_OPUS, EDIT_FIELD_SONNET, EDIT_FIELD_URL,
 };
 use crate::config::{
     ENV_AUTH_TOKEN, ENV_BASE_URL, ENV_DEFAULT_HAIKU_MODEL, ENV_DEFAULT_OPUS_MODEL,
@@ -53,8 +53,12 @@ pub fn render(frame: &mut Frame, app: &mut App) {
     }
 
     // Overlay edit form if in edit mode
-    if let AppMode::EditProfile { focused_field } = app.mode {
-        let area = centered_rect(70, 70, frame.area());
+    if let AppMode::EditProfile {
+        focused_field,
+        is_creating: _,
+    } = app.mode
+    {
+        let area = centered_rect(70, 80, frame.area());
         render_edit_profile(frame, app, area, focused_field);
     }
 }
@@ -171,10 +175,16 @@ fn render_footer(frame: &mut Frame, area: Rect, app: &App) {
                 Span::styled("] Help  ", Style::default().fg(Color::DarkGray)),
                 Span::styled("[", Style::default().fg(Color::DarkGray)),
                 Span::styled("e", Style::default().fg(Color::Cyan)),
-                Span::styled("] Edit Profile  ", Style::default().fg(Color::DarkGray)),
+                Span::styled("] Edit  ", Style::default().fg(Color::DarkGray)),
+                Span::styled("[", Style::default().fg(Color::DarkGray)),
+                Span::styled("n", Style::default().fg(Color::Cyan)),
+                Span::styled("] New  ", Style::default().fg(Color::DarkGray)),
+                Span::styled("[", Style::default().fg(Color::DarkGray)),
+                Span::styled("d", Style::default().fg(Color::Cyan)),
+                Span::styled("] Delete  ", Style::default().fg(Color::DarkGray)),
                 Span::styled("[", Style::default().fg(Color::DarkGray)),
                 Span::styled("r", Style::default().fg(Color::Cyan)),
-                Span::styled("] Reset Config  ", Style::default().fg(Color::DarkGray)),
+                Span::styled("] Reset  ", Style::default().fg(Color::DarkGray)),
                 Span::styled("[", Style::default().fg(Color::DarkGray)),
                 Span::styled("l", Style::default().fg(Color::Cyan)),
                 Span::styled("] LMStudio Models  ", Style::default().fg(Color::DarkGray)),
@@ -191,9 +201,23 @@ fn render_footer(frame: &mut Frame, area: Rect, app: &App) {
 
 fn render_edit_profile(frame: &mut Frame, app: &App, area: Rect, focused_field: usize) {
     frame.render_widget(Clear, area);
+
+    let (title, _) = if let AppMode::EditProfile { is_creating, .. } = app.mode {
+        (
+            if is_creating {
+                " Create Profile "
+            } else {
+                " Edit Profile "
+            },
+            is_creating,
+        )
+    } else {
+        (" Edit Profile ", false)
+    };
+
     let block = Block::default()
         .borders(Borders::ALL)
-        .title(" Edit Profile ")
+        .title(title)
         .style(Style::default().bg(Color::Black));
     frame.render_widget(block, area);
 
@@ -205,6 +229,8 @@ fn render_edit_profile(frame: &mut Frame, app: &App, area: Rect, focused_field: 
     let chunks = Layout::default()
         .direction(Direction::Vertical)
         .constraints([
+            Constraint::Length(3), // Name
+            Constraint::Length(3), // Description
             Constraint::Length(3), // API Key
             Constraint::Length(3), // URL
             Constraint::Length(3), // Haiku
@@ -215,6 +241,21 @@ fn render_edit_profile(frame: &mut Frame, app: &App, area: Rect, focused_field: 
         ])
         .split(inner_area);
 
+    render_edit_field(
+        frame,
+        chunks[0],
+        "Profile Name",
+        app.name_input.value(),
+        focused_field == EDIT_FIELD_NAME,
+    );
+    render_edit_field(
+        frame,
+        chunks[1],
+        "Description",
+        app.description_input.value(),
+        focused_field == EDIT_FIELD_DESCRIPTION,
+    );
+
     let api_key_value: Cow<'_, str> = if app.reveal_api_key {
         Cow::Borrowed(app.api_key_input.value())
     } else {
@@ -223,35 +264,35 @@ fn render_edit_profile(frame: &mut Frame, app: &App, area: Rect, focused_field: 
 
     render_edit_field(
         frame,
-        chunks[0],
+        chunks[2],
         ENV_AUTH_TOKEN,
         api_key_value.as_ref(),
         focused_field == EDIT_FIELD_API_KEY,
     );
     render_edit_field(
         frame,
-        chunks[1],
+        chunks[3],
         ENV_BASE_URL,
         app.url_input.value(),
         focused_field == EDIT_FIELD_URL,
     );
     render_edit_field(
         frame,
-        chunks[2],
+        chunks[4],
         ENV_DEFAULT_HAIKU_MODEL,
         app.haiku_model_input.value(),
         focused_field == EDIT_FIELD_HAIKU,
     );
     render_edit_field(
         frame,
-        chunks[3],
+        chunks[5],
         ENV_DEFAULT_SONNET_MODEL,
         app.sonnet_model_input.value(),
         focused_field == EDIT_FIELD_SONNET,
     );
     render_edit_field(
         frame,
-        chunks[4],
+        chunks[6],
         ENV_DEFAULT_OPUS_MODEL,
         app.opus_model_input.value(),
         focused_field == EDIT_FIELD_OPUS,
@@ -267,15 +308,17 @@ fn render_edit_profile(frame: &mut Frame, app: &App, area: Rect, focused_field: 
         Span::styled("Esc", Style::default().fg(Color::Cyan)),
         Span::raw(" Cancel"),
     ]);
-    frame.render_widget(Paragraph::new(help_text), chunks[6]);
+    frame.render_widget(Paragraph::new(help_text), chunks[8]);
 
     // Set cursor
     let cursor_positions = [
-        (chunks[0], app.api_key_input.visual_cursor() as u16),
-        (chunks[1], app.url_input.visual_cursor() as u16),
-        (chunks[2], app.haiku_model_input.visual_cursor() as u16),
-        (chunks[3], app.sonnet_model_input.visual_cursor() as u16),
-        (chunks[4], app.opus_model_input.visual_cursor() as u16),
+        (chunks[0], app.name_input.visual_cursor() as u16),
+        (chunks[1], app.description_input.visual_cursor() as u16),
+        (chunks[2], app.api_key_input.visual_cursor() as u16),
+        (chunks[3], app.url_input.visual_cursor() as u16),
+        (chunks[4], app.haiku_model_input.visual_cursor() as u16),
+        (chunks[5], app.sonnet_model_input.visual_cursor() as u16),
+        (chunks[6], app.opus_model_input.visual_cursor() as u16),
     ];
     if let Some((chunk, cursor_x)) = cursor_positions.get(focused_field) {
         frame.set_cursor_position((chunk.x + *cursor_x + 1, chunk.y + 1));
@@ -410,4 +453,23 @@ fn render_lmstudio_model_list(frame: &mut Frame, app: &mut App, area: Rect) {
         .highlight_symbol(">> ");
 
     frame.render_stateful_widget(list, area, &mut app.lmstudio_list_state);
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{is_sensitive_key, mask_value};
+
+    #[test]
+    fn sensitive_key_detection() {
+        assert!(is_sensitive_key("API_KEY"));
+        assert!(is_sensitive_key("auth_token"));
+        assert!(is_sensitive_key("my_secret"));
+        assert!(!is_sensitive_key("model"));
+    }
+
+    #[test]
+    fn mask_value_short_and_long() {
+        assert_eq!(mask_value("short"), "****");
+        assert_eq!(mask_value("1234567890"), "1234...7890");
+    }
 }
