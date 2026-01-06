@@ -13,6 +13,7 @@ pub const ENV_MODEL: &str = "ANTHROPIC_MODEL";
 pub const ENV_SMALL_FAST_MODEL: &str = "ANTHROPIC_SMALL_FAST_MODEL";
 pub const ENV_DISABLE_NONESSENTIAL_TRAFFIC: &str = "CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC";
 pub const ENV_API_TIMEOUT_MS: &str = "API_TIMEOUT_MS";
+pub const ENV_PROXY_TARGET_URL: &str = "PROXY_TARGET_URL";
 
 /// A single profile configuration
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -164,10 +165,51 @@ impl Config {
                     ]),
                 },
                 Profile {
-                    name: "lmstudio".to_string(),
-                    description: "Local models via LMStudio (press 'l' to select model)"
-                        .to_string(),
-                    env: HashMap::new(),
+                    name: "OpenRouter".to_string(),
+                    description: "OpenRouter API (direct)".to_string(),
+                    env: HashMap::from([
+                        (
+                            ENV_AUTH_TOKEN.to_string(),
+                            "YOUR_OPENROUTER_API_KEY_HERE".to_string(),
+                        ),
+                        (
+                            ENV_BASE_URL.to_string(),
+                            "https://openrouter.ai/api".to_string(),
+                        ),
+                        (
+                            ENV_MODEL.to_string(),
+                            "google/gemini-3-flash-preview".to_string(),
+                        ),
+                    ]),
+                },
+                Profile {
+                    name: "custom example".to_string(),
+                    description:
+                        "Custom OpenAI-compatible API (requires PROXY_TARGET_URL and model names)"
+                            .to_string(),
+                    env: HashMap::from([
+                        (ENV_AUTH_TOKEN.to_string(), "custom".to_string()),
+                        (
+                            ENV_BASE_URL.to_string(),
+                            "http://localhost:4000/anthropic".to_string(),
+                        ),
+                        (
+                            ENV_PROXY_TARGET_URL.to_string(),
+                            "http://localhost:1234/v1".to_string(),
+                        ),
+                        (
+                            ENV_DEFAULT_HAIKU_MODEL.to_string(),
+                            "local-model".to_string(),
+                        ),
+                        (
+                            ENV_DEFAULT_SONNET_MODEL.to_string(),
+                            "local-model".to_string(),
+                        ),
+                        (
+                            ENV_DEFAULT_OPUS_MODEL.to_string(),
+                            "local-model".to_string(),
+                        ),
+                    ]),
                 },
             ],
         }

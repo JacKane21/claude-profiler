@@ -1,22 +1,23 @@
 //! Rust-native proxy for translating between Anthropic and OpenAI API formats.
 //!
 //! This proxy allows Claude Code (which expects Anthropic API) to communicate with
-//! LM Studio (which provides OpenAI-compatible API) without requiring Python/LiteLLM.
+//! OpenAI-compatible endpoints (Responses or Completions) without requiring Python/LiteLLM.
 
 use anyhow::Result;
 use axum::{
     Json, Router,
     body::Body,
     extract::State,
-    http::{StatusCode, header},
+    http::{HeaderMap, StatusCode, header},
     response::{IntoResponse, Response},
     routing::{get, post},
 };
 use futures::stream::Stream;
-use serde::{Deserialize, Serialize};
+use serde::{Deserialize, Serialize, de::DeserializeOwned};
 use serde_json::Value;
 use std::collections::{HashMap, HashSet};
 use std::convert::Infallible;
+use std::ops::ControlFlow;
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -173,6 +174,28 @@ pub struct AnthropicUsage {
     pub output_tokens: u32,
 }
 
+impl AnthropicUsage {
+    fn from_prompt_completion(prompt_tokens: u32, completion_tokens: u32) -> Self {
+        Self {
+            input_tokens: prompt_tokens,
+            output_tokens: completion_tokens,
+        }
+    }
+
+    fn from_openai_usage_value(value: &Value) -> Self {
+        Self {
+            input_tokens: value
+                .get("input_tokens")
+                .and_then(|v| v.as_u64())
+                .unwrap_or(0) as u32,
+            output_tokens: value
+                .get("output_tokens")
+                .and_then(|v| v.as_u64())
+                .unwrap_or(0) as u32,
+        }
+    }
+}
+
 // ============================================================================
 // OpenAI Responses API Types
 // ============================================================================
@@ -280,8 +303,232 @@ pub struct ResponsesResponse {
 }
 
 // ============================================================================
+// OpenAI Chat Completions API Types
+// ============================================================================
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ChatCompletionRequest {
+    pub model: String,
+    pub messages: Vec<ChatMessage>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub max_tokens: Option<u32>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub temperature: Option<f32>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub top_p: Option<f32>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub stream: Option<bool>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub tools: Option<Vec<ChatTool>>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub tool_choice: Option<Value>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(untagged)]
+pub enum ChatMessageContent {
+    Text(String),
+    Parts(Vec<ChatContentPart>),
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(tag = "type")]
+pub enum ChatContentPart {
+    #[serde(rename = "text")]
+    Text { text: String },
+    #[serde(rename = "image_url")]
+    ImageUrl { image_url: ChatImageUrl },
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ChatImageUrl {
+    pub url: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ChatMessage {
+    pub role: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub content: Option<ChatMessageContent>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub tool_calls: Option<Vec<ChatToolCall>>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub tool_call_id: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ChatTool {
+    #[serde(rename = "type")]
+    pub tool_type: String,
+    pub function: ChatToolFunction,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ChatToolFunction {
+    pub name: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub description: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub parameters: Option<Value>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ChatToolCall {
+    pub id: String,
+    #[serde(rename = "type")]
+    pub tool_type: String,
+    pub function: ChatToolCallFunction,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ChatToolCallFunction {
+    pub name: String,
+    pub arguments: String,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+pub struct ChatCompletionResponse {
+    pub id: String,
+    pub choices: Vec<ChatChoice>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub usage: Option<ChatUsage>,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+pub struct ChatChoice {
+    pub message: ChatMessage,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+pub struct ChatUsage {
+    pub prompt_tokens: u32,
+    pub completion_tokens: u32,
+}
+
+// ============================================================================
+// OpenAI Completions API Types (legacy)
+// ============================================================================
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct CompletionsRequest {
+    pub model: String,
+    pub prompt: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub max_tokens: Option<u32>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub temperature: Option<f32>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub top_p: Option<f32>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub stop: Option<Vec<String>>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub stream: Option<bool>,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+pub struct CompletionsResponse {
+    pub id: String,
+    pub choices: Vec<CompletionChoice>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub usage: Option<CompletionUsage>,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+pub struct CompletionChoice {
+    #[serde(default)]
+    pub text: String,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+pub struct CompletionUsage {
+    pub prompt_tokens: u32,
+    pub completion_tokens: u32,
+}
+
+// ============================================================================
 // Translation Logic
 // ============================================================================
+
+fn system_prompt_text(system: &SystemPrompt) -> String {
+    match system {
+        SystemPrompt::Text(text) => text.clone(),
+        SystemPrompt::Blocks(blocks) => blocks
+            .iter()
+            .map(|b| b.text.as_str())
+            .collect::<Vec<_>>()
+            .join("\n"),
+    }
+}
+
+fn system_prompt_text_opt(system: Option<&SystemPrompt>) -> Option<String> {
+    let text = system.map(system_prompt_text)?;
+    if text.is_empty() { None } else { Some(text) }
+}
+
+fn stringify_value(value: &Value) -> String {
+    match value {
+        Value::String(s) => s.clone(),
+        _ => serde_json::to_string(value).unwrap_or_default(),
+    }
+}
+
+fn response_text_part(role: &str, text: &str) -> ResponseInputContentPart {
+    if role == "assistant" {
+        ResponseInputContentPart::OutputText {
+            text: text.to_string(),
+        }
+    } else {
+        ResponseInputContentPart::InputText {
+            text: text.to_string(),
+        }
+    }
+}
+
+fn base_anthropic_response(
+    response_id: &str,
+    model: &str,
+    content: Vec<ResponseContent>,
+    usage: AnthropicUsage,
+) -> AnthropicResponse {
+    AnthropicResponse {
+        id: format!("msg_{}", response_id),
+        response_type: "message".to_string(),
+        role: "assistant".to_string(),
+        content,
+        model: model.to_string(),
+        stop_reason: Some("end_turn".to_string()),
+        stop_sequence: None,
+        usage,
+    }
+}
+
+fn usage_or_default<T>(value: Option<T>, map: impl FnOnce(T) -> AnthropicUsage) -> AnthropicUsage {
+    value.map_or(
+        AnthropicUsage {
+            input_tokens: 0,
+            output_tokens: 0,
+        },
+        map,
+    )
+}
+
+fn push_text_content(content: &mut Vec<ResponseContent>, text: &str) {
+    if !text.is_empty() {
+        content.push(ResponseContent::Text {
+            text: text.to_string(),
+        });
+    }
+}
+
+fn push_tool_use(content: &mut Vec<ResponseContent>, id: &str, name: &str, arguments: &str) {
+    let input: Value =
+        serde_json::from_str(arguments).unwrap_or(Value::String(arguments.to_string()));
+    content.push(ResponseContent::ToolUse {
+        id: id.to_string(),
+        name: name.to_string(),
+        input,
+    });
+}
 
 /// Convert Anthropic request to OpenAI Responses request
 pub fn anthropic_to_responses(req: &AnthropicRequest, target_model: &str) -> ResponsesRequest {
@@ -293,14 +540,7 @@ pub fn anthropic_to_responses(req: &AnthropicRequest, target_model: &str) -> Res
     }
 
     // Add system prompt as instructions if present
-    let instructions = req.system.as_ref().map(|system| match system {
-        SystemPrompt::Text(text) => text.clone(),
-        SystemPrompt::Blocks(blocks) => blocks
-            .iter()
-            .map(|b| b.text.as_str())
-            .collect::<Vec<_>>()
-            .join("\n"),
-    });
+    let instructions = system_prompt_text_opt(req.system.as_ref());
 
     // Convert tools
     let tools = req.tools.as_ref().and_then(|tools| {
@@ -319,11 +559,7 @@ pub fn anthropic_to_responses(req: &AnthropicRequest, target_model: &str) -> Res
             })
             .collect();
 
-        if mapped.is_empty() {
-            None
-        } else {
-            Some(mapped)
-        }
+        (!mapped.is_empty()).then_some(mapped)
     });
 
     let reasoning = match &req.thinking {
@@ -358,17 +594,10 @@ pub fn anthropic_to_responses(req: &AnthropicRequest, target_model: &str) -> Res
 /// Convert a single Anthropic message to OpenAI Responses input items
 fn convert_anthropic_message(msg: &AnthropicMessage) -> Vec<ResponseInputItem> {
     match &msg.content {
-        AnthropicContent::Text(text) => {
-            let part = if msg.role == "assistant" {
-                ResponseInputContentPart::OutputText { text: text.clone() }
-            } else {
-                ResponseInputContentPart::InputText { text: text.clone() }
-            };
-            vec![ResponseInputItem::Message {
-                role: msg.role.clone(),
-                content: vec![part],
-            }]
-        }
+        AnthropicContent::Text(text) => vec![ResponseInputItem::Message {
+            role: msg.role.clone(),
+            content: vec![response_text_part(&msg.role, text)],
+        }],
         AnthropicContent::Blocks(blocks) => {
             let mut items = Vec::new();
             let mut content_parts = Vec::new();
@@ -388,12 +617,7 @@ fn convert_anthropic_message(msg: &AnthropicMessage) -> Vec<ResponseInputItem> {
             for block in blocks {
                 match block {
                     ContentBlock::Text { text } => {
-                        let part = if msg.role == "assistant" {
-                            ResponseInputContentPart::OutputText { text: text.clone() }
-                        } else {
-                            ResponseInputContentPart::InputText { text: text.clone() }
-                        };
-                        content_parts.push(part);
+                        content_parts.push(response_text_part(&msg.role, text));
                     }
                     ContentBlock::Image { source } => {
                         let data_url = format!("data:{};base64,{}", source.media_type, source.data);
@@ -418,10 +642,7 @@ fn convert_anthropic_message(msg: &AnthropicMessage) -> Vec<ResponseInputItem> {
                         ..
                     } => {
                         flush_message(&mut items, &mut content_parts);
-                        let content_str = match content {
-                            Value::String(s) => s.clone(),
-                            _ => serde_json::to_string(content).unwrap_or_default(),
-                        };
+                        let content_str = stringify_value(content);
                         items.push(ResponseInputItem::FunctionCallOutput {
                             call_id: tool_use_id.clone(),
                             output: content_str,
@@ -441,6 +662,264 @@ fn convert_anthropic_message(msg: &AnthropicMessage) -> Vec<ResponseInputItem> {
             items
         }
     }
+}
+
+/// Convert Anthropic request to OpenAI Chat Completions request
+pub fn anthropic_to_chat(req: &AnthropicRequest, target_model: &str) -> ChatCompletionRequest {
+    let mut messages = Vec::new();
+
+    if let Some(system_text) = system_prompt_text_opt(req.system.as_ref()) {
+        messages.push(ChatMessage {
+            role: "system".to_string(),
+            content: Some(ChatMessageContent::Text(system_text)),
+            tool_calls: None,
+            tool_call_id: None,
+        });
+    }
+
+    for msg in &req.messages {
+        convert_anthropic_message_to_chat(msg, &mut messages);
+    }
+
+    // Convert tools
+    let tools = req.tools.as_ref().and_then(|tools| {
+        let mapped: Vec<ChatTool> = tools
+            .iter()
+            .filter_map(|tool| {
+                let name = tool.get("name")?.as_str()?;
+                let description = tool.get("description").and_then(|d| d.as_str());
+                let input_schema = tool.get("input_schema").cloned();
+
+                Some(ChatTool {
+                    tool_type: "function".to_string(),
+                    function: ChatToolFunction {
+                        name: name.to_string(),
+                        description: description.map(String::from),
+                        parameters: input_schema,
+                    },
+                })
+            })
+            .collect();
+
+        (!mapped.is_empty()).then_some(mapped)
+    });
+
+    ChatCompletionRequest {
+        model: target_model.to_string(),
+        messages,
+        max_tokens: req.max_tokens,
+        temperature: req.temperature,
+        top_p: req.top_p,
+        stream: req.stream,
+        tools,
+        tool_choice: req.tool_choice.clone(),
+    }
+}
+
+fn convert_anthropic_message_to_chat(msg: &AnthropicMessage, out: &mut Vec<ChatMessage>) {
+    match &msg.content {
+        AnthropicContent::Text(text) => out.push(ChatMessage {
+            role: msg.role.clone(),
+            content: Some(ChatMessageContent::Text(text.clone())),
+            tool_calls: None,
+            tool_call_id: None,
+        }),
+        AnthropicContent::Blocks(blocks) => {
+            let mut parts: Vec<ChatContentPart> = Vec::new();
+
+            let flush_message =
+                |out: &mut Vec<ChatMessage>, role: &str, parts: &mut Vec<ChatContentPart>| {
+                    if !parts.is_empty() {
+                        let content = ChatMessageContent::Parts(std::mem::take(parts));
+                        out.push(ChatMessage {
+                            role: role.to_string(),
+                            content: Some(content),
+                            tool_calls: None,
+                            tool_call_id: None,
+                        });
+                    }
+                };
+
+            for block in blocks {
+                match block {
+                    ContentBlock::Text { text } => {
+                        parts.push(ChatContentPart::Text { text: text.clone() });
+                    }
+                    ContentBlock::Image { source } => {
+                        if msg.role != "assistant" {
+                            let data_url =
+                                format!("data:{};base64,{}", source.media_type, source.data);
+                            parts.push(ChatContentPart::ImageUrl {
+                                image_url: ChatImageUrl { url: data_url },
+                            });
+                        }
+                    }
+                    ContentBlock::ToolUse { id, name, input } => {
+                        flush_message(out, &msg.role, &mut parts);
+                        out.push(ChatMessage {
+                            role: "assistant".to_string(),
+                            content: None,
+                            tool_calls: Some(vec![ChatToolCall {
+                                id: id.clone(),
+                                tool_type: "function".to_string(),
+                                function: ChatToolCallFunction {
+                                    name: name.clone(),
+                                    arguments: serde_json::to_string(input).unwrap_or_default(),
+                                },
+                            }]),
+                            tool_call_id: None,
+                        });
+                    }
+                    ContentBlock::ToolResult {
+                        tool_use_id,
+                        content,
+                        ..
+                    } => {
+                        flush_message(out, &msg.role, &mut parts);
+                        let content_str = stringify_value(content);
+                        out.push(ChatMessage {
+                            role: "tool".to_string(),
+                            content: Some(ChatMessageContent::Text(content_str)),
+                            tool_calls: None,
+                            tool_call_id: Some(tool_use_id.clone()),
+                        });
+                    }
+                    ContentBlock::Thinking { .. } => {}
+                    ContentBlock::RedactedThinking { .. } => {}
+                }
+            }
+
+            flush_message(out, &msg.role, &mut parts);
+        }
+    }
+}
+
+/// Convert Anthropic request to OpenAI legacy Completions request
+pub fn anthropic_to_completions(req: &AnthropicRequest, target_model: &str) -> CompletionsRequest {
+    let mut prompt = String::new();
+
+    if let Some(system_text) = system_prompt_text_opt(req.system.as_ref()) {
+        prompt.push_str("System: ");
+        prompt.push_str(&system_text);
+        prompt.push_str("\n\n");
+    }
+
+    for msg in &req.messages {
+        let content = flatten_anthropic_message_text(msg);
+        if !content.is_empty() {
+            let role = if msg.role.is_empty() {
+                "User"
+            } else if msg.role == "assistant" {
+                "Assistant"
+            } else {
+                msg.role.as_str()
+            };
+            prompt.push_str(role);
+            prompt.push_str(": ");
+            prompt.push_str(&content);
+            prompt.push_str("\n\n");
+        }
+    }
+
+    if let Some(last) = req.messages.last()
+        && last.role != "assistant"
+    {
+        prompt.push_str("Assistant: ");
+    }
+
+    CompletionsRequest {
+        model: target_model.to_string(),
+        prompt,
+        max_tokens: req.max_tokens,
+        temperature: req.temperature,
+        top_p: req.top_p,
+        stop: req.stop_sequences.clone(),
+        stream: req.stream,
+    }
+}
+
+fn flatten_anthropic_message_text(msg: &AnthropicMessage) -> String {
+    match &msg.content {
+        AnthropicContent::Text(text) => text.clone(),
+        AnthropicContent::Blocks(blocks) => {
+            let mut out = String::new();
+            for block in blocks {
+                match block {
+                    ContentBlock::Text { text } => {
+                        if !out.is_empty() {
+                            out.push('\n');
+                        }
+                        out.push_str(text);
+                    }
+                    ContentBlock::ToolResult { content, .. } => {
+                        let content_str = stringify_value(content);
+                        if !content_str.is_empty() {
+                            if !out.is_empty() {
+                                out.push('\n');
+                            }
+                            out.push_str(&content_str);
+                        }
+                    }
+                    _ => {}
+                }
+            }
+            out
+        }
+    }
+}
+
+/// Convert OpenAI Chat Completions response to Anthropic response
+pub fn chat_to_anthropic(resp: &ChatCompletionResponse, original_model: &str) -> AnthropicResponse {
+    let mut content = Vec::new();
+
+    if let Some(choice) = resp.choices.first() {
+        if let Some(message_content) = &choice.message.content {
+            match message_content {
+                ChatMessageContent::Text(text) => push_text_content(&mut content, text),
+                ChatMessageContent::Parts(parts) => {
+                    for part in parts {
+                        if let ChatContentPart::Text { text } = part {
+                            push_text_content(&mut content, text);
+                        }
+                    }
+                }
+            }
+        }
+
+        if let Some(tool_calls) = &choice.message.tool_calls {
+            for call in tool_calls {
+                push_tool_use(
+                    &mut content,
+                    &call.id,
+                    &call.function.name,
+                    &call.function.arguments,
+                );
+            }
+        }
+    }
+
+    let usage = usage_or_default(resp.usage.as_ref(), |u| {
+        AnthropicUsage::from_prompt_completion(u.prompt_tokens, u.completion_tokens)
+    });
+
+    base_anthropic_response(&resp.id, original_model, content, usage)
+}
+
+/// Convert OpenAI Completions response to Anthropic response
+pub fn completions_to_anthropic(
+    resp: &CompletionsResponse,
+    original_model: &str,
+) -> AnthropicResponse {
+    let mut content = Vec::new();
+    if let Some(choice) = resp.choices.first() {
+        push_text_content(&mut content, &choice.text);
+    }
+
+    let usage = usage_or_default(resp.usage.as_ref(), |u| {
+        AnthropicUsage::from_prompt_completion(u.prompt_tokens, u.completion_tokens)
+    });
+
+    base_anthropic_response(&resp.id, original_model, content, usage)
 }
 
 /// Convert OpenAI Responses response to Anthropic response
@@ -463,11 +942,8 @@ pub fn responses_to_anthropic(
                 for part in parts {
                     if part.get("type").and_then(|t| t.as_str()) == Some("output_text")
                         && let Some(text) = part.get("text").and_then(|t| t.as_str())
-                        && !text.is_empty()
                     {
-                        content.push(ResponseContent::Text {
-                            text: text.to_string(),
-                        });
+                        push_text_content(&mut content, text);
                     }
                 }
             }
@@ -479,13 +955,7 @@ pub fn responses_to_anthropic(
                 .or_else(|| item.get("id").and_then(|c| c.as_str()))
                 .unwrap_or("call");
             let arguments = item.get("arguments").and_then(|a| a.as_str()).unwrap_or("");
-            let input: Value =
-                serde_json::from_str(arguments).unwrap_or(Value::String(arguments.to_string()));
-            content.push(ResponseContent::ToolUse {
-                id: call_id.to_string(),
-                name: name.to_string(),
-                input,
-            });
+            push_tool_use(&mut content, call_id, name, arguments);
         } else if item_type == "reasoning"
             && include_thinking
             && let Some(thinking) = extract_reasoning_text(item)
@@ -498,27 +968,9 @@ pub fn responses_to_anthropic(
         }
     }
 
-    let usage = resp.usage.as_ref().map_or(
-        AnthropicUsage {
-            input_tokens: 0,
-            output_tokens: 0,
-        },
-        |u| AnthropicUsage {
-            input_tokens: u.get("input_tokens").and_then(|v| v.as_u64()).unwrap_or(0) as u32,
-            output_tokens: u.get("output_tokens").and_then(|v| v.as_u64()).unwrap_or(0) as u32,
-        },
-    );
+    let usage = usage_or_default(resp.usage.as_ref(), AnthropicUsage::from_openai_usage_value);
 
-    AnthropicResponse {
-        id: format!("msg_{}", resp.id),
-        response_type: "message".to_string(),
-        role: "assistant".to_string(),
-        content,
-        model: original_model.to_string(),
-        stop_reason: Some("end_turn".to_string()),
-        stop_sequence: None,
-        usage,
-    }
+    base_anthropic_response(&resp.id, original_model, content, usage)
 }
 
 fn extract_reasoning_text(item: &Value) -> Option<String> {
@@ -550,12 +1002,23 @@ fn extract_reasoning_text(item: &Value) -> Option<String> {
 // Proxy Server
 // ============================================================================
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum UpstreamMode {
+    Auto,
+    Responses,
+    ChatCompletions,
+    Completions,
+}
+
 /// Shared state for the proxy server
-#[derive(Clone)]
 pub struct ProxyState {
     pub client: reqwest::Client,
-    pub lmstudio_url: String,
-    pub target_model: String,
+    pub responses_url: String,
+    pub chat_completions_url: String,
+    pub completions_url: String,
+    upstream_mode: tokio::sync::RwLock<UpstreamMode>,
+    /// Optional model override for main requests
+    pub model_override: Option<String>,
     /// Optional auxiliary model for handling lightweight requests
     /// (token counting, suggestions, etc.)
     pub auxiliary_model: Option<String>,
@@ -615,8 +1078,60 @@ fn is_auxiliary_request(request: &AnthropicRequest) -> bool {
     false
 }
 
+fn with_v1(base: &str) -> String {
+    let trimmed = base.trim_end_matches('/');
+    if trimmed.ends_with("/v1") {
+        trimmed.to_string()
+    } else {
+        format!("{}/v1", trimmed)
+    }
+}
+
+fn build_upstream_urls(target_url: &str) -> (String, String, String, UpstreamMode) {
+    let trimmed = target_url.trim_end_matches('/');
+    if trimmed.ends_with("/chat/completions") {
+        let base = trimmed.trim_end_matches("/chat/completions").to_string();
+        return (
+            format!("{}/responses", with_v1(&base)),
+            trimmed.to_string(),
+            format!("{}/completions", with_v1(&base)),
+            UpstreamMode::ChatCompletions,
+        );
+    }
+    if trimmed.ends_with("/completions") && !trimmed.ends_with("/chat/completions") {
+        let base = trimmed.trim_end_matches("/completions").to_string();
+        return (
+            format!("{}/responses", with_v1(&base)),
+            format!("{}/chat/completions", with_v1(&base)),
+            trimmed.to_string(),
+            UpstreamMode::Completions,
+        );
+    }
+    if trimmed.ends_with("/responses") {
+        let base = trimmed.trim_end_matches("/responses").to_string();
+        return (
+            trimmed.to_string(),
+            format!("{}/chat/completions", with_v1(&base)),
+            format!("{}/completions", with_v1(&base)),
+            UpstreamMode::Responses,
+        );
+    }
+
+    let base = trimmed.to_string();
+    (
+        format!("{}/responses", with_v1(&base)),
+        format!("{}/chat/completions", with_v1(&base)),
+        format!("{}/completions", with_v1(&base)),
+        UpstreamMode::Auto,
+    )
+}
+
 /// Start the proxy server
-pub async fn start_server(lmstudio_model: String, auxiliary_model: Option<String>) -> Result<()> {
+pub async fn start_server(
+    proxy_target_url: String,
+    model_override: Option<String>,
+    auxiliary_model: Option<String>,
+) -> Result<()> {
     if let Some(ref aux) = auxiliary_model {
         eprintln!(
             "Proxy: Using auxiliary model '{}' for lightweight requests",
@@ -624,12 +1139,18 @@ pub async fn start_server(lmstudio_model: String, auxiliary_model: Option<String
         );
     }
 
+    let (responses_url, chat_completions_url, completions_url, mode) =
+        build_upstream_urls(&proxy_target_url);
+
     let state = Arc::new(ProxyState {
         client: reqwest::Client::builder()
             .timeout(Duration::from_secs(300))
             .build()?,
-        lmstudio_url: "http://localhost:1234/v1/responses".to_string(),
-        target_model: lmstudio_model,
+        responses_url,
+        chat_completions_url,
+        completions_url,
+        upstream_mode: tokio::sync::RwLock::new(mode),
+        model_override,
         auxiliary_model,
     });
 
@@ -665,130 +1186,438 @@ async fn fallback_handler(req: axum::extract::Request) -> Response {
     (StatusCode::NOT_FOUND, format!("Not found: {}", uri)).into_response()
 }
 
+#[derive(Debug)]
+struct UpstreamError {
+    status: StatusCode,
+    body: String,
+}
+
+fn should_fallback(err: &UpstreamError) -> bool {
+    if matches!(
+        err.status,
+        StatusCode::NOT_FOUND | StatusCode::METHOD_NOT_ALLOWED | StatusCode::NOT_IMPLEMENTED
+    ) {
+        return true;
+    }
+    if err.status == StatusCode::BAD_REQUEST {
+        let body = err.body.to_ascii_lowercase();
+        return body.contains("not found")
+            || body.contains("unknown endpoint")
+            || body.contains("unsupported")
+            || body.contains("unrecognized");
+    }
+    false
+}
+
+fn select_target_model(state: &ProxyState, request: &AnthropicRequest) -> String {
+    if is_auxiliary_request(request) {
+        if let Some(aux) = &state.auxiliary_model {
+            return aux.clone();
+        }
+    }
+    state
+        .model_override
+        .clone()
+        .unwrap_or_else(|| request.model.clone())
+}
+
+fn extract_auth_header(headers: &HeaderMap) -> Option<String> {
+    if let Some(value) = headers.get(header::AUTHORIZATION) {
+        if let Ok(text) = value.to_str() {
+            if !text.trim().is_empty() {
+                return Some(text.to_string());
+            }
+        }
+    }
+
+    if let Some(value) = headers.get("x-api-key") {
+        if let Ok(text) = value.to_str() {
+            let trimmed = text.trim();
+            if !trimmed.is_empty() {
+                if trimmed.to_ascii_lowercase().starts_with("bearer ") {
+                    return Some(trimmed.to_string());
+                }
+                return Some(format!("Bearer {}", trimmed));
+            }
+        }
+    }
+
+    None
+}
+
+async fn send_json_request<T: Serialize>(
+    client: &reqwest::Client,
+    url: &str,
+    body: &T,
+    auth_header: Option<&str>,
+) -> Result<reqwest::Response, UpstreamError> {
+    let mut builder = client.post(url).header("Content-Type", "application/json");
+    if let Some(auth) = auth_header {
+        builder = builder.header(header::AUTHORIZATION, auth);
+    }
+    builder.json(body).send().await.map_err(|e| UpstreamError {
+        status: StatusCode::BAD_GATEWAY,
+        body: format!("Failed to connect to upstream: {}", e),
+    })
+}
+
+async fn ensure_success(response: reqwest::Response) -> Result<reqwest::Response, UpstreamError> {
+    if response.status().is_success() {
+        return Ok(response);
+    }
+    let status = response.status();
+    let body = response.text().await.unwrap_or_default();
+    Err(UpstreamError { status, body })
+}
+
+async fn parse_json<T: DeserializeOwned>(response: reqwest::Response) -> Result<T, UpstreamError> {
+    response.json::<T>().await.map_err(|e| UpstreamError {
+        status: StatusCode::INTERNAL_SERVER_ERROR,
+        body: format!("Parse error: {}", e),
+    })
+}
+
+fn sse_response(
+    stream: impl Stream<Item = Result<String, Infallible>> + Send + 'static,
+) -> Response {
+    Response::builder()
+        .status(StatusCode::OK)
+        .header(header::CONTENT_TYPE, "text/event-stream")
+        .header(header::CACHE_CONTROL, "no-cache")
+        .header(header::CONNECTION, "keep-alive")
+        .body(Body::from_stream(stream))
+        .unwrap_or_else(|_| StatusCode::INTERNAL_SERVER_ERROR.into_response())
+}
+
+fn result_to_response(result: Result<Response, UpstreamError>) -> Response {
+    result.map_or_else(|err| (err.status, err.body).into_response(), |resp| resp)
+}
+
+async fn attempt_upstream(
+    state: &Arc<ProxyState>,
+    mode: UpstreamMode,
+    result: Result<Response, UpstreamError>,
+) -> Result<Response, UpstreamError> {
+    match result {
+        Ok(resp) => {
+            *state.upstream_mode.write().await = mode;
+            Ok(resp)
+        }
+        Err(err) => Err(err),
+    }
+}
+
+async fn attempt_or_fallback(
+    state: &Arc<ProxyState>,
+    mode: UpstreamMode,
+    result: Result<Response, UpstreamError>,
+) -> Result<Option<Response>, Response> {
+    match attempt_upstream(state, mode, result).await {
+        Ok(resp) => Ok(Some(resp)),
+        Err(err) if should_fallback(&err) => Ok(None),
+        Err(err) => Err((err.status, err.body).into_response()),
+    }
+}
+
+fn handle_attempt_result(result: Result<Option<Response>, Response>) -> ControlFlow<Response, ()> {
+    match result {
+        Ok(Some(resp)) => ControlFlow::Break(resp),
+        Ok(None) => ControlFlow::Continue(()),
+        Err(resp) => ControlFlow::Break(resp),
+    }
+}
+
 /// Main messages endpoint - handles Anthropic API requests
 async fn messages_handler(
     State(state): State<Arc<ProxyState>>,
+    headers: HeaderMap,
     Json(request): Json<AnthropicRequest>,
 ) -> Response {
     let original_model = request.model.clone();
     let is_streaming = request.stream.unwrap_or(false);
     let include_thinking = matches!(request.thinking, Some(ThinkingConfig::Enabled { .. }));
+    let target_model = select_target_model(&state, &request);
+    let auth_header = extract_auth_header(&headers);
 
-    // Determine which model to use based on request type
-    let target_model = if is_auxiliary_request(&request) {
-        state
-            .auxiliary_model
-            .as_ref()
-            .unwrap_or(&state.target_model)
-    } else {
-        &state.target_model
-    };
+    let mode = { *state.upstream_mode.read().await };
 
-    // Convert to OpenAI Responses format
-    let openai_request = anthropic_to_responses(&request, target_model);
+    match mode {
+        UpstreamMode::Responses => {
+            let openai_request = anthropic_to_responses(&request, &target_model);
+            result_to_response(
+                handle_responses_request(
+                    state,
+                    openai_request,
+                    original_model,
+                    include_thinking,
+                    is_streaming,
+                    auth_header.clone(),
+                )
+                .await,
+            )
+        }
+        UpstreamMode::ChatCompletions => {
+            let openai_request = anthropic_to_chat(&request, &target_model);
+            result_to_response(
+                handle_chat_request(
+                    state,
+                    openai_request,
+                    original_model,
+                    is_streaming,
+                    auth_header.clone(),
+                )
+                .await,
+            )
+        }
+        UpstreamMode::Completions => {
+            let openai_request = anthropic_to_completions(&request, &target_model);
+            result_to_response(
+                handle_completions_request(
+                    state,
+                    openai_request,
+                    original_model,
+                    is_streaming,
+                    auth_header.clone(),
+                )
+                .await,
+            )
+        }
+        UpstreamMode::Auto => {
+            handle_auto_request(
+                state,
+                request,
+                target_model,
+                original_model,
+                is_streaming,
+                include_thinking,
+                auth_header,
+            )
+            .await
+        }
+    }
+}
 
+async fn handle_responses_request(
+    state: Arc<ProxyState>,
+    request: ResponsesRequest,
+    original_model: String,
+    include_thinking: bool,
+    is_streaming: bool,
+    auth_header: Option<String>,
+) -> Result<Response, UpstreamError> {
+    let response = send_json_request(
+        &state.client,
+        &state.responses_url,
+        &request,
+        auth_header.as_deref(),
+    )
+    .await?;
+
+    let response = ensure_success(response).await?;
     if is_streaming {
-        handle_streaming_request(state, openai_request, original_model, include_thinking).await
-    } else {
-        handle_non_streaming_request(state, openai_request, original_model, include_thinking).await
+        let byte_stream = response.bytes_stream();
+        let stream = create_anthropic_stream(byte_stream, original_model, include_thinking);
+        return Ok(sse_response(stream));
     }
+    let openai_resp = parse_json::<ResponsesResponse>(response).await?;
+
+    let anthropic_resp = responses_to_anthropic(&openai_resp, &original_model, include_thinking);
+    Ok(Json(anthropic_resp).into_response())
 }
 
-/// Handle non-streaming request
-async fn handle_non_streaming_request(
+async fn handle_chat_request(
     state: Arc<ProxyState>,
-    request: ResponsesRequest,
+    request: ChatCompletionRequest,
     original_model: String,
-    include_thinking: bool,
-) -> Response {
-    let response = state
-        .client
-        .post(&state.lmstudio_url)
-        .header("Content-Type", "application/json")
-        .json(&request)
-        .send()
-        .await;
+    is_streaming: bool,
+    auth_header: Option<String>,
+) -> Result<Response, UpstreamError> {
+    let response = send_json_request(
+        &state.client,
+        &state.chat_completions_url,
+        &request,
+        auth_header.as_deref(),
+    )
+    .await?;
 
-    match response {
-        Ok(resp) => {
-            if !resp.status().is_success() {
-                let status = resp.status();
-                let body = resp.text().await.unwrap_or_default();
-                return (
-                    StatusCode::from_u16(status.as_u16())
-                        .unwrap_or(StatusCode::INTERNAL_SERVER_ERROR),
-                    body,
-                )
-                    .into_response();
-            }
-
-            match resp.json::<ResponsesResponse>().await {
-                Ok(openai_resp) => {
-                    let anthropic_resp =
-                        responses_to_anthropic(&openai_resp, &original_model, include_thinking);
-                    Json(anthropic_resp).into_response()
-                }
-                Err(e) => (
-                    StatusCode::INTERNAL_SERVER_ERROR,
-                    format!("Parse error: {}", e),
-                )
-                    .into_response(),
-            }
-        }
-        Err(e) => (
-            StatusCode::BAD_GATEWAY,
-            format!("Failed to connect to LM Studio: {}", e),
-        )
-            .into_response(),
+    let response = ensure_success(response).await?;
+    if is_streaming {
+        let byte_stream = response.bytes_stream();
+        let stream = create_anthropic_stream_from_chat(byte_stream, original_model);
+        return Ok(sse_response(stream));
     }
+    let openai_resp = parse_json::<ChatCompletionResponse>(response).await?;
+
+    let anthropic_resp = chat_to_anthropic(&openai_resp, &original_model);
+    Ok(Json(anthropic_resp).into_response())
 }
 
-/// Handle streaming request
-async fn handle_streaming_request(
+async fn handle_completions_request(
     state: Arc<ProxyState>,
-    request: ResponsesRequest,
+    request: CompletionsRequest,
     original_model: String,
-    include_thinking: bool,
-) -> Response {
-    let response = state
-        .client
-        .post(&state.lmstudio_url)
-        .header("Content-Type", "application/json")
-        .json(&request)
-        .send()
-        .await;
+    is_streaming: bool,
+    auth_header: Option<String>,
+) -> Result<Response, UpstreamError> {
+    let response = send_json_request(
+        &state.client,
+        &state.completions_url,
+        &request,
+        auth_header.as_deref(),
+    )
+    .await?;
 
-    match response {
-        Ok(resp) => {
-            if !resp.status().is_success() {
-                let status = resp.status();
-                let body = resp.text().await.unwrap_or_default();
-                return (
-                    StatusCode::from_u16(status.as_u16())
-                        .unwrap_or(StatusCode::INTERNAL_SERVER_ERROR),
-                    body,
-                )
-                    .into_response();
-            }
-
-            // Create SSE stream
-            let byte_stream = resp.bytes_stream();
-            let stream = create_anthropic_stream(byte_stream, original_model, include_thinking);
-
-            Response::builder()
-                .status(StatusCode::OK)
-                .header(header::CONTENT_TYPE, "text/event-stream")
-                .header(header::CACHE_CONTROL, "no-cache")
-                .header(header::CONNECTION, "keep-alive")
-                .body(Body::from_stream(stream))
-                .unwrap_or_else(|_| StatusCode::INTERNAL_SERVER_ERROR.into_response())
-        }
-        Err(e) => (
-            StatusCode::BAD_GATEWAY,
-            format!("Failed to connect to LM Studio: {}", e),
-        )
-            .into_response(),
+    let response = ensure_success(response).await?;
+    if is_streaming {
+        let byte_stream = response.bytes_stream();
+        let stream = create_anthropic_stream_from_completions(byte_stream, original_model);
+        return Ok(sse_response(stream));
     }
+    let openai_resp = parse_json::<CompletionsResponse>(response).await?;
+
+    let anthropic_resp = completions_to_anthropic(&openai_resp, &original_model);
+    Ok(Json(anthropic_resp).into_response())
+}
+
+async fn handle_auto_request(
+    state: Arc<ProxyState>,
+    request: AnthropicRequest,
+    target_model: String,
+    original_model: String,
+    is_streaming: bool,
+    include_thinking: bool,
+    auth_header: Option<String>,
+) -> Response {
+    let response_request = anthropic_to_responses(&request, &target_model);
+    if let ControlFlow::Break(resp) = handle_attempt_result(
+        attempt_or_fallback(
+            &state,
+            UpstreamMode::Responses,
+            handle_responses_request(
+                state.clone(),
+                response_request,
+                original_model.clone(),
+                include_thinking,
+                is_streaming,
+                auth_header.clone(),
+            )
+            .await,
+        )
+        .await,
+    ) {
+        return resp;
+    }
+
+    let chat_request = anthropic_to_chat(&request, &target_model);
+    if let ControlFlow::Break(resp) = handle_attempt_result(
+        attempt_or_fallback(
+            &state,
+            UpstreamMode::ChatCompletions,
+            handle_chat_request(
+                state.clone(),
+                chat_request,
+                original_model.clone(),
+                is_streaming,
+                auth_header.clone(),
+            )
+            .await,
+        )
+        .await,
+    ) {
+        return resp;
+    }
+
+    let completion_request = anthropic_to_completions(&request, &target_model);
+    result_to_response(
+        attempt_upstream(
+            &state,
+            UpstreamMode::Completions,
+            handle_completions_request(
+                state.clone(),
+                completion_request,
+                original_model,
+                is_streaming,
+                auth_header,
+            )
+            .await,
+        )
+        .await,
+    )
+}
+
+enum SseLine {
+    Done,
+    Json(Value),
+}
+
+fn parse_sse_line(line: &str) -> Option<SseLine> {
+    let line = line.trim_end_matches('\r');
+    if line.is_empty() || line.starts_with("event:") {
+        return None;
+    }
+    let data = line.strip_prefix("data: ")?;
+    if data == "[DONE]" {
+        return Some(SseLine::Done);
+    }
+    let event: Value = serde_json::from_str(data).ok()?;
+    Some(SseLine::Json(event))
+}
+
+fn finish_stream_message(state: &mut StreamState, msg_id: &str, model: &str) -> Vec<String> {
+    let mut events = Vec::new();
+    if let Some(start) = state.ensure_message_started(msg_id, model) {
+        events.push(start);
+    }
+    events.extend(state.finish_message());
+    events
+}
+
+fn text_delta_events(
+    state: &mut StreamState,
+    msg_id: &str,
+    model: &str,
+    content: &str,
+) -> Vec<String> {
+    let mut events = Vec::new();
+    if let Some(start) = state.ensure_message_started(msg_id, model) {
+        events.push(start);
+    }
+    if let Some(stop) = state.close_thinking_block() {
+        events.push(stop);
+    }
+    if let Some(start) = state.ensure_text_block_started() {
+        events.push(start);
+    }
+
+    state.output_tokens += 1;
+    let escaped = escape_json_string(content);
+    if let Some(index) = state.text_block_index {
+        events.push(event_text_delta(index, &escaped));
+    }
+    events
+}
+
+fn thinking_delta_events(
+    state: &mut StreamState,
+    msg_id: &str,
+    model: &str,
+    content: &str,
+) -> Vec<String> {
+    let mut events = Vec::new();
+    if let Some(start) = state.ensure_message_started(msg_id, model) {
+        events.push(start);
+    }
+    if let Some(start) = state.ensure_thinking_block_started() {
+        events.push(start);
+    }
+    if state.thinking_block_open {
+        state.output_tokens += 1;
+        let escaped = escape_json_string(content);
+        if let Some(index) = state.thinking_block_index {
+            events.push(event_thinking_delta(index, &escaped));
+        }
+    }
+    events
 }
 
 /// Create an Anthropic-format SSE stream from OpenAI Responses stream
@@ -804,7 +1633,7 @@ fn create_anthropic_stream(
 
     async_stream::stream! {
         let msg_id = format!("msg_{}", uuid_simple());
-        let model = model.clone();
+        let model = model;
 
         futures::pin_mut!(byte_stream);
 
@@ -815,70 +1644,44 @@ fn create_anthropic_stream(
 
                     // Process complete SSE lines
                     while let Some(line) = drain_sse_line(&mut buffer) {
-                        let line = line.trim_end_matches('\r');
-
-                        if line.is_empty() || line.starts_with("event:") {
-                            continue;
-                        }
-                        let data = match line.strip_prefix("data: ") {
-                            Some(data) => data,
+                        let line = match parse_sse_line(&line) {
+                            Some(line) => line,
                             None => continue,
                         };
-                        if data == "[DONE]" {
-                            if let Some(start) = state.ensure_message_started(&msg_id, &model) {
-                                yield Ok(start);
-                            }
-                            for event in state.finish_message() {
-                                yield Ok(event);
-                            }
-                            continue;
-                        }
 
-                        let event: Value = match serde_json::from_str(data) {
-                            Ok(value) => value,
-                            Err(_) => continue,
-                        };
-
-                        let event_type = event.get("type").and_then(|t| t.as_str()).unwrap_or("");
-
-                        match event_type {
-                            "response.output_text.delta" => {
-                                if let Some(start) = state.ensure_message_started(&msg_id, &model) {
-                                    yield Ok(start);
+                        match line {
+                            SseLine::Done => {
+                                for event in finish_stream_message(&mut state, &msg_id, &model) {
+                                    yield Ok(event);
                                 }
+                            }
+                            SseLine::Json(event) => {
+                                let event_type =
+                                    event.get("type").and_then(|t| t.as_str()).unwrap_or("");
+
+                                match event_type {
+                            "response.output_text.delta" => {
                                 if let Some(content) = event.get("delta").and_then(|d| d.as_str())
                                     && !content.is_empty()
                                 {
-                                    if let Some(stop) = state.close_thinking_block() {
-                                        yield Ok(stop);
-                                    }
-                                    if let Some(start) = state.ensure_text_block_started() {
-                                        yield Ok(start);
-                                    }
-
-                                    state.output_tokens += 1;
-                                    let escaped = escape_json_string(content);
-                                    if let Some(index) = state.text_block_index {
-                                        yield Ok(event_text_delta(index, &escaped));
+                                    for event in
+                                        text_delta_events(&mut state, &msg_id, &model, content)
+                                    {
+                                        yield Ok(event);
                                     }
                                 }
                             }
                             "response.reasoning_text.delta" if include_thinking => {
-                                if let Some(start) = state.ensure_message_started(&msg_id, &model) {
-                                    yield Ok(start);
-                                }
                                 if let Some(reasoning) = event.get("delta").and_then(|d| d.as_str())
                                     && !reasoning.is_empty()
                                 {
-                                    if let Some(start) = state.ensure_thinking_block_started() {
-                                        yield Ok(start);
-                                    }
-                                    if state.thinking_block_open {
-                                        state.output_tokens += 1;
-                                        let escaped = escape_json_string(reasoning);
-                                        if let Some(index) = state.thinking_block_index {
-                                            yield Ok(event_thinking_delta(index, &escaped));
-                                        }
+                                    for event in thinking_delta_events(
+                                        &mut state,
+                                        &msg_id,
+                                        &model,
+                                        reasoning,
+                                    ) {
+                                        yield Ok(event);
                                     }
                                 }
                             }
@@ -992,20 +1795,231 @@ fn create_anthropic_stream(
                                 }
                             }
                             "response.completed" | "response.failed" => {
-                                if let Some(start) = state.ensure_message_started(&msg_id, &model) {
-                                    yield Ok(start);
-                                }
-                                for event in state.finish_message() {
+                                for event in finish_stream_message(&mut state, &msg_id, &model) {
                                     yield Ok(event);
                                 }
                             }
                             _ => {}
+                                }
+                            }
                         }
                     }
                 }
                 Err(_) => {
                     break;
                 }
+            }
+        }
+    }
+}
+
+/// Create an Anthropic-format SSE stream from OpenAI Chat Completions stream
+fn create_anthropic_stream_from_chat(
+    byte_stream: impl Stream<Item = Result<bytes::Bytes, reqwest::Error>> + Send + 'static,
+    model: String,
+) -> impl Stream<Item = Result<String, Infallible>> + Send + 'static {
+    use futures::StreamExt;
+
+    let mut buffer = String::new();
+    let mut state = StreamState::new();
+
+    async_stream::stream! {
+        let msg_id = format!("msg_{}", uuid_simple());
+        let model = model;
+
+        futures::pin_mut!(byte_stream);
+
+        while let Some(chunk_result) = byte_stream.next().await {
+            match chunk_result {
+                Ok(bytes) => {
+                    buffer.push_str(&String::from_utf8_lossy(&bytes));
+
+                    while let Some(line) = drain_sse_line(&mut buffer) {
+                        let line = match parse_sse_line(&line) {
+                            Some(line) => line,
+                            None => continue,
+                        };
+
+                        match line {
+                            SseLine::Done => {
+                                for event in finish_stream_message(&mut state, &msg_id, &model) {
+                                    yield Ok(event);
+                                }
+                            }
+                            SseLine::Json(event) => {
+                                if let Some(choices) = event.get("choices").and_then(|c| c.as_array()) {
+                                    for choice in choices {
+                                        if let Some(delta) = choice.get("delta") {
+                                            if let Some(content) = delta.get("content").and_then(|c| c.as_str())
+                                                && !content.is_empty()
+                                            {
+                                                for event in text_delta_events(
+                                                    &mut state,
+                                                    &msg_id,
+                                                    &model,
+                                                    content,
+                                                ) {
+                                                    yield Ok(event);
+                                                }
+                                            }
+
+                                            if let Some(tool_calls) = delta.get("tool_calls").and_then(|t| t.as_array()) {
+                                                for (tool_idx, tool_call) in tool_calls.iter().enumerate() {
+                                                    let output_index = tool_call
+                                                        .get("index")
+                                                        .and_then(|v| v.as_u64())
+                                                        .unwrap_or(tool_idx as u64) as u32;
+
+                                                    let call_id = tool_call.get("id").and_then(|v| v.as_str());
+                                                    let function = tool_call.get("function");
+                                                    let name = function.and_then(|f| f.get("name").and_then(|v| v.as_str()));
+                                                    let arguments = function.and_then(|f| f.get("arguments").and_then(|v| v.as_str()));
+
+                                                    if call_id.is_some() || name.is_some() {
+                                                        let mut map = serde_json::Map::new();
+                                                        if let Some(id) = call_id {
+                                                            map.insert("id".to_string(), Value::String(id.to_string()));
+                                                        }
+                                                        if let Some(name) = name {
+                                                            map.insert("name".to_string(), Value::String(name.to_string()));
+                                                        }
+                                                        if !map.is_empty() {
+                                                            state.capture_tool_metadata(output_index, &Value::Object(map));
+                                                        }
+                                                    }
+
+                                                    if let Some(start) = state.ensure_message_started(&msg_id, &model) {
+                                                        yield Ok(start);
+                                                    }
+                                                    if let Some(start) = state.ensure_tool_block_open(output_index) {
+                                                        yield Ok(start);
+                                                    }
+                                                    let block_index = state.tool_block_index(output_index);
+
+                                                    if let Some(args) = arguments
+                                                        && !args.is_empty()
+                                                    {
+                                                        let escaped = escape_json_string(args);
+                                                        if state.tool_blocks_open.contains(&output_index) {
+                                                            yield Ok(event_tool_args_delta(block_index, &escaped));
+                                                            state.tool_args_emitted.insert(output_index);
+                                                        } else {
+                                                            state.pending_tool_args
+                                                                .entry(output_index)
+                                                                .and_modify(|s| s.push_str(args))
+                                                                .or_insert_with(|| args.to_string());
+                                                        }
+                                                    }
+
+                                                    if state.tool_blocks_open.contains(&output_index) {
+                                                        if let Some(pending) =
+                                                            state.pending_tool_args.remove(&output_index)
+                                                            && !pending.is_empty()
+                                                        {
+                                                            let escaped = escape_json_string(&pending);
+                                                            yield Ok(event_tool_args_delta(
+                                                                block_index,
+                                                                &escaped,
+                                                            ));
+                                                            state.tool_args_emitted.insert(output_index);
+                                                        }
+                                                    }
+                                                }
+                                            }
+                                        }
+
+                                        if let Some(finish) = choice.get("finish_reason").and_then(|f| f.as_str())
+                                            && !finish.is_empty()
+                                        {
+                                            for event in finish_stream_message(&mut state, &msg_id, &model) {
+                                                yield Ok(event);
+                                            }
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+                Err(_) => break,
+            }
+        }
+    }
+}
+
+/// Create an Anthropic-format SSE stream from OpenAI Completions stream
+fn create_anthropic_stream_from_completions(
+    byte_stream: impl Stream<Item = Result<bytes::Bytes, reqwest::Error>> + Send + 'static,
+    model: String,
+) -> impl Stream<Item = Result<String, Infallible>> + Send + 'static {
+    use futures::StreamExt;
+
+    let mut buffer = String::new();
+    let mut state = StreamState::new();
+
+    async_stream::stream! {
+        let msg_id = format!("msg_{}", uuid_simple());
+        let model = model;
+
+        futures::pin_mut!(byte_stream);
+
+        while let Some(chunk_result) = byte_stream.next().await {
+            match chunk_result {
+                Ok(bytes) => {
+                    buffer.push_str(&String::from_utf8_lossy(&bytes));
+
+                    while let Some(line) = drain_sse_line(&mut buffer) {
+                        let line = match parse_sse_line(&line) {
+                            Some(line) => line,
+                            None => continue,
+                        };
+
+                        match line {
+                            SseLine::Done => {
+                                for event in finish_stream_message(&mut state, &msg_id, &model) {
+                                    yield Ok(event);
+                                }
+                            }
+                            SseLine::Json(event) => {
+                                if let Some(choices) = event.get("choices").and_then(|c| c.as_array()) {
+                                    for choice in choices {
+                                        let text = choice
+                                            .get("text")
+                                            .and_then(|t| t.as_str())
+                                            .or_else(|| {
+                                                choice
+                                                    .get("delta")
+                                                    .and_then(|d| d.get("content"))
+                                                    .and_then(|t| t.as_str())
+                                            });
+
+                                        if let Some(content) = text
+                                            && !content.is_empty()
+                                        {
+                                            for event in text_delta_events(
+                                                &mut state,
+                                                &msg_id,
+                                                &model,
+                                                content,
+                                            ) {
+                                                yield Ok(event);
+                                            }
+                                        }
+
+                                        if let Some(finish) = choice.get("finish_reason").and_then(|f| f.as_str())
+                                            && !finish.is_empty()
+                                        {
+                                            for event in finish_stream_message(&mut state, &msg_id, &model) {
+                                                yield Ok(event);
+                                            }
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+                Err(_) => break,
             }
         }
     }
@@ -1428,6 +2442,74 @@ mod tests {
     }
 
     #[test]
+    fn anthropic_to_chat_maps_system_and_tools() {
+        let req = AnthropicRequest {
+            model: "claude".to_string(),
+            messages: vec![AnthropicMessage {
+                role: "user".to_string(),
+                content: AnthropicContent::Text("hi".to_string()),
+            }],
+            max_tokens: Some(10),
+            temperature: None,
+            top_p: None,
+            top_k: None,
+            stop_sequences: None,
+            stream: None,
+            system: Some(SystemPrompt::Text("sys".to_string())),
+            tools: Some(vec![json!({
+                "name": "tool1",
+                "description": "desc",
+                "input_schema": {"type": "object"}
+            })]),
+            tool_choice: None,
+            thinking: None,
+        };
+
+        let mapped = anthropic_to_chat(&req, "target");
+        assert_eq!(mapped.model, "target");
+        assert_eq!(mapped.messages[0].role, "system");
+        match mapped.messages[0].content.as_ref().unwrap() {
+            ChatMessageContent::Text(text) => assert_eq!(text, "sys"),
+            _ => panic!("expected system text"),
+        }
+        let tools = mapped.tools.expect("tools mapped");
+        assert_eq!(tools.len(), 1);
+        assert_eq!(tools[0].function.name, "tool1");
+    }
+
+    #[test]
+    fn chat_to_anthropic_maps_text_and_tool() {
+        let resp = ChatCompletionResponse {
+            id: "chat_1".to_string(),
+            choices: vec![ChatChoice {
+                message: ChatMessage {
+                    role: "assistant".to_string(),
+                    content: Some(ChatMessageContent::Text("hello".to_string())),
+                    tool_calls: Some(vec![ChatToolCall {
+                        id: "call_1".to_string(),
+                        tool_type: "function".to_string(),
+                        function: ChatToolCallFunction {
+                            name: "tool".to_string(),
+                            arguments: "{\"x\":1}".to_string(),
+                        },
+                    }]),
+                    tool_call_id: None,
+                },
+            }],
+            usage: Some(ChatUsage {
+                prompt_tokens: 3,
+                completion_tokens: 5,
+            }),
+        };
+
+        let mapped = chat_to_anthropic(&resp, "orig");
+        assert_eq!(mapped.model, "orig");
+        assert_eq!(mapped.usage.input_tokens, 3);
+        assert_eq!(mapped.usage.output_tokens, 5);
+        assert_eq!(mapped.content.len(), 2);
+    }
+
+    #[test]
     fn extract_reasoning_text_prefers_content_then_summary() {
         let item = json!({
             "content": [{"type": "reasoning_text", "text": "thinking"}]
@@ -1473,7 +2555,11 @@ mod tests {
         let events: Vec<String> = stream.map(|r| r.unwrap()).collect().await;
 
         assert!(events.iter().any(|e| e.contains("\"type\":\"tool_use\"")));
-        assert!(events.iter().any(|e| e.contains("\"type\":\"input_json_delta\"")));
+        assert!(
+            events
+                .iter()
+                .any(|e| e.contains("\"type\":\"input_json_delta\""))
+        );
         assert!(events.iter().any(|e| e.contains("content_block_stop")));
     }
 }

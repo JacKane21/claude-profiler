@@ -2,24 +2,24 @@
 name = "claude-profiler"
 version = "0.1.0"
 edition = "2024"
-description = "TUI profile launcher for Claude Code with LM Studio proxy support"
+description = "TUI profile launcher for Claude Code with universal proxy support"
 license = "MIT"
 readme = "README.md"
-keywords = ["claude", "tui", "lmstudio", "anthropic"]
+keywords = ["claude", "tui", "proxy", "anthropic"]
 categories = ["command-line-utilities"]
 
 [dependencies]
-ratatui = "0.29"
-crossterm = "0.28"
+ratatui = "0.30"
+crossterm = "0.29"
 serde = { version = "1.0", features = ["derive"] }
 serde_json = "1.0"
 tokio = { version = "1", features = ["full"] }
-reqwest = { version = "0.12", features = ["blocking", "json", "stream"] }
+reqwest = { version = "0.13.1", features = ["blocking", "json", "stream"] }
 bytes = "1.9"
-toml = "0.8"
-dirs = "5.0"
+toml = "0.9.10+spec-1.1.0"
+dirs = "6.0.0"
 anyhow = "1.0"
-tui-input = "0.11"
+tui-input = "0.15.0"
 axum = "0.8"
 async-stream = "0.3"
 futures = "0.3"

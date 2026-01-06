@@ -1,18 +1,18 @@
 mod app;
 mod config;
 mod launcher;
-mod lmstudio;
 mod proxy;
 mod tui;
 mod ui;
 
 use anyhow::Result;
 use crossterm::event::{self, Event, KeyCode, KeyEventKind};
-use std::time::{Duration, Instant};
+use std::time::Duration;
 
 use crate::app::{
     Action, App, AppMode, EDIT_FIELD_API_KEY, EDIT_FIELD_COUNT, EDIT_FIELD_DESCRIPTION,
-    EDIT_FIELD_HAIKU, EDIT_FIELD_NAME, EDIT_FIELD_OPUS, EDIT_FIELD_SONNET, EDIT_FIELD_URL,
+    EDIT_FIELD_HAIKU, EDIT_FIELD_NAME, EDIT_FIELD_OPUS, EDIT_FIELD_PROXY_URL, EDIT_FIELD_SONNET,
+    EDIT_FIELD_URL,
 };
 use crate::config::{Config, Profile};
 use tui_input::backend::crossterm::EventHandler;
@@ -67,35 +67,15 @@ fn main() -> Result<()> {
     Ok(())
 }
 
-const LMSTUDIO_POLL_INTERVAL: Duration = Duration::from_secs(3);
 const UI_POLL_GRANULARITY: Duration = Duration::from_millis(250);
 
 fn run_app(terminal: &mut tui::Tui, app: &mut App) -> Result<Option<Profile>> {
-    let mut next_lmstudio_poll_at = Instant::now() + LMSTUDIO_POLL_INTERVAL;
-
     loop {
         // Render
         terminal.draw(|frame| ui::render(frame, app))?;
 
-        let in_lmstudio = app.mode == AppMode::LMStudioModelSelection;
-        let now = Instant::now();
-
         // Poll for events with a timeout (also enables periodic refresh while idle)
-        let poll_timeout = if in_lmstudio {
-            let until_refresh = next_lmstudio_poll_at
-                .checked_duration_since(now)
-                .unwrap_or(Duration::ZERO);
-            UI_POLL_GRANULARITY.min(until_refresh)
-        } else {
-            UI_POLL_GRANULARITY
-        };
-
-        if !event::poll(poll_timeout)? {
-            // Idle/tick path: do periodic work here
-            if in_lmstudio && Instant::now() >= next_lmstudio_poll_at {
-                app.fetch_lmstudio_models();
-                next_lmstudio_poll_at = Instant::now() + LMSTUDIO_POLL_INTERVAL;
-            }
+        if !event::poll(UI_POLL_GRANULARITY)? {
             continue;
         }
 
@@ -121,7 +101,6 @@ fn run_app(terminal: &mut tui::Tui, app: &mut App) -> Result<Option<Profile>> {
                     KeyCode::Char('r') => Some(Action::ResetProfile),
                     KeyCode::Char('R') => Some(Action::ResetAll),
                     KeyCode::Char('d') => Some(Action::DeleteProfile),
-                    KeyCode::Char('l') => Some(Action::SelectLMStudio),
                     _ => None,
                 },
                 AppMode::Help => Some(Action::HideHelp),
@@ -159,25 +138,10 @@ fn run_app(terminal: &mut tui::Tui, app: &mut App) -> Result<Option<Profile>> {
                         None
                     }
                 },
-                AppMode::LMStudioModelSelection => match key.code {
-                    KeyCode::Char('q') | KeyCode::Esc => Some(Action::BackToProfiles),
-                    KeyCode::Up | KeyCode::Char('k') => Some(Action::MoveUp),
-                    KeyCode::Down | KeyCode::Char('j') => Some(Action::MoveDown),
-                    KeyCode::Enter => Some(Action::SelectProfile),
-                    KeyCode::Char('l') => Some(Action::OpenLMStudio),
-                    KeyCode::Char('r') => Some(Action::SelectLMStudio),
-                    KeyCode::Char('a') => Some(Action::ToggleAuxiliarySelection),
-                    _ => None,
-                },
             };
 
             if let Some(action) = action {
-                let reset_lmstudio_poll_deadline = matches!(action, Action::SelectLMStudio);
                 app.handle_action(action);
-
-                if reset_lmstudio_poll_deadline {
-                    next_lmstudio_poll_at = Instant::now() + LMSTUDIO_POLL_INTERVAL;
-                }
             }
 
             if app.should_quit {
@@ -197,6 +161,7 @@ fn handle_edit_input(app: &mut App, focused_field: usize, key: event::KeyEvent) 
         EDIT_FIELD_DESCRIPTION => app.description_input.handle_event(&Event::Key(key)),
         EDIT_FIELD_API_KEY => app.api_key_input.handle_event(&Event::Key(key)),
         EDIT_FIELD_URL => app.url_input.handle_event(&Event::Key(key)),
+        EDIT_FIELD_PROXY_URL => app.proxy_url_input.handle_event(&Event::Key(key)),
         EDIT_FIELD_HAIKU => app.haiku_model_input.handle_event(&Event::Key(key)),
         EDIT_FIELD_SONNET => app.sonnet_model_input.handle_event(&Event::Key(key)),
         EDIT_FIELD_OPUS => app.opus_model_input.handle_event(&Event::Key(key)),
