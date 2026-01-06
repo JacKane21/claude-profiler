@@ -14,9 +14,12 @@ use sha2::{Digest, Sha256};
 use std::fs;
 use std::io::{self, Write};
 use std::path::PathBuf;
-use std::sync::{Arc, Mutex};
+use std::sync::{Arc, LazyLock, Mutex};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 use tokio::sync::oneshot;
+
+/// Shared HTTP client for OAuth requests
+static HTTP_CLIENT: LazyLock<reqwest::Client> = LazyLock::new(reqwest::Client::new);
 
 use crate::config::Config;
 
@@ -48,7 +51,8 @@ fn token_file_path() -> Option<PathBuf> {
     Config::config_dir().map(|p| p.join("openai-oauth.json"))
 }
 
-fn is_truthy(value: &str) -> bool {
+/// Check if a string value represents a truthy boolean (1, true, yes, y, on)
+pub fn is_truthy(value: &str) -> bool {
     matches!(
         value.trim().to_ascii_lowercase().as_str(),
         "1" | "true" | "yes" | "y" | "on"
@@ -57,6 +61,14 @@ fn is_truthy(value: &str) -> bool {
 
 pub fn openai_oauth_enabled(env_value: Option<&String>) -> bool {
     env_value.map(|s| is_truthy(s)).unwrap_or(false)
+}
+
+/// OAuth token response from OpenAI
+#[derive(Deserialize)]
+struct OAuthTokenResponse {
+    access_token: Option<String>,
+    refresh_token: Option<String>,
+    expires_in: Option<u64>,
 }
 
 pub fn decode_chatgpt_account_id(access_token: &str) -> Option<String> {
@@ -151,7 +163,6 @@ fn build_authorize_url(code_challenge: &str, state: &str) -> Result<String> {
 }
 
 async fn exchange_authorization_code(code: &str, verifier: &str) -> Result<OpenAiOAuthTokens> {
-    let client = reqwest::Client::new();
     let body = url::form_urlencoded::Serializer::new(String::new())
         .append_pair("grant_type", "authorization_code")
         .append_pair("client_id", OPENAI_OAUTH_CLIENT_ID)
@@ -159,7 +170,7 @@ async fn exchange_authorization_code(code: &str, verifier: &str) -> Result<OpenA
         .append_pair("code_verifier", verifier)
         .append_pair("redirect_uri", OPENAI_OAUTH_REDIRECT_URI)
         .finish();
-    let response = client
+    let response = HTTP_CLIENT
         .post(OPENAI_OAUTH_TOKEN_URL)
         .header("Content-Type", "application/x-www-form-urlencoded")
         .body(body)
@@ -173,13 +184,7 @@ async fn exchange_authorization_code(code: &str, verifier: &str) -> Result<OpenA
         anyhow::bail!("OAuth code->token failed: {} {}", status, body);
     }
 
-    #[derive(Deserialize)]
-    struct TokenResponse {
-        access_token: Option<String>,
-        refresh_token: Option<String>,
-        expires_in: Option<u64>,
-    }
-    let parsed: TokenResponse =
+    let parsed: OAuthTokenResponse =
         serde_json::from_str(&body).context("OAuth code->token response parse failed")?;
     let access = parsed
         .access_token
@@ -199,13 +204,12 @@ async fn exchange_authorization_code(code: &str, verifier: &str) -> Result<OpenA
 }
 
 async fn refresh_access_token(refresh_token: &str) -> Result<OpenAiOAuthTokens> {
-    let client = reqwest::Client::new();
     let body = url::form_urlencoded::Serializer::new(String::new())
         .append_pair("grant_type", "refresh_token")
         .append_pair("refresh_token", refresh_token)
         .append_pair("client_id", OPENAI_OAUTH_CLIENT_ID)
         .finish();
-    let response = client
+    let response = HTTP_CLIENT
         .post(OPENAI_OAUTH_TOKEN_URL)
         .header("Content-Type", "application/x-www-form-urlencoded")
         .body(body)
@@ -219,13 +223,7 @@ async fn refresh_access_token(refresh_token: &str) -> Result<OpenAiOAuthTokens> 
         anyhow::bail!("OAuth refresh failed: {} {}", status, body);
     }
 
-    #[derive(Deserialize)]
-    struct TokenResponse {
-        access_token: Option<String>,
-        refresh_token: Option<String>,
-        expires_in: Option<u64>,
-    }
-    let parsed: TokenResponse =
+    let parsed: OAuthTokenResponse =
         serde_json::from_str(&body).context("OAuth refresh response parse failed")?;
     let access = parsed
         .access_token
@@ -380,10 +378,15 @@ async fn wait_for_oauth_code(expected_state: String, timeout: Duration) -> Resul
 }
 
 fn try_open_browser(url: &str) {
+    if cfg!(target_os = "windows") {
+        let _ = std::process::Command::new("cmd")
+            .args(["/C", "start", "", url])
+            .spawn();
+        return;
+    }
+
     let opener = if cfg!(target_os = "macos") {
         "open"
-    } else if cfg!(target_os = "windows") {
-        "start"
     } else {
         "xdg-open"
     };

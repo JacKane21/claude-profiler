@@ -511,65 +511,70 @@ fn render_model_picker(frame: &mut Frame, app: &App, area: Rect) {
     frame.render_widget(Paragraph::new(help_text), chunks[1]);
 }
 
+/// A word chunk with its position and length information for text wrapping
+struct WordChunk {
+    word_start: usize,
+    word_len: usize,
+    chunk_len: usize, // word + trailing spaces
+}
+
+/// Iterate through text producing word chunks for wrapping calculation.
+/// This matches ratatui's simple wrapping logic (split by whitespace).
+fn iter_word_chunks(chars: &[char]) -> impl Iterator<Item = WordChunk> + '_ {
+    let mut i = 0;
+    std::iter::from_fn(move || {
+        if i >= chars.len() {
+            return None;
+        }
+        let word_start = i;
+        // Find word end
+        while i < chars.len() && !chars[i].is_whitespace() {
+            i += 1;
+        }
+        let word_len = i - word_start;
+        // Find trailing spaces
+        while i < chars.len() && chars[i].is_whitespace() {
+            i += 1;
+        }
+        let chunk_len = i - word_start;
+        Some(WordChunk { word_start, word_len, chunk_len })
+    })
+}
+
 /// Calculate the cursor position (col, row) for wrapped text.
-/// matches the simple wrapping logic of ratatui (split by whitespace)
 fn calculate_wrapped_cursor(text: &str, cursor_idx: usize, max_width: u16) -> (u16, u16) {
     if max_width == 0 {
         return (0, 0);
     }
     let max_width = max_width as usize;
     let chars: Vec<char> = text.chars().collect();
-    
-    // Check if cursor is at the very beginning
+
     if cursor_idx == 0 || chars.is_empty() {
         return (0, 0);
     }
 
     let mut col = 0;
     let mut current_row = 0;
-    
-    let mut i = 0;
-    while i < chars.len() {
-        // Find next word end
-        let word_start = i;
-        while i < chars.len() && !chars[i].is_whitespace() {
-            i += 1;
-        }
-        let word_end = i;
-        let word_len = word_end - word_start;
-        
-        // Find trailing spaces
-        while i < chars.len() && chars[i].is_whitespace() {
-            i += 1;
-        }
-        let space_end = i;
-        
-        let chunk_len = space_end - word_start;
-        
-        // Does word fit?
-        // If we are at start of line, it fits (forced).
-        // If not start, checks if `col + chunk_len <= max_width`.
-        // Actually Ratatui puts word on next line if it doesn't fit.
-        
-        if col > 0 && col + word_len > max_width {
+
+    for chunk in iter_word_chunks(&chars) {
+        // Wrap to next line if word doesn't fit
+        if col > 0 && col + chunk.word_len > max_width {
             current_row += 1;
             col = 0;
         }
-        
-        // Check if cursor is in this chunk (word + spaces)
-        if cursor_idx >= word_start && cursor_idx <= space_end {
-            let offset_in_chunk = cursor_idx - word_start;
-            return ((col + offset_in_chunk) as u16, current_row);
+        // Check if cursor is in this chunk
+        let chunk_end = chunk.word_start + chunk.chunk_len;
+        if cursor_idx >= chunk.word_start && cursor_idx <= chunk_end {
+            let offset = cursor_idx - chunk.word_start;
+            return ((col + offset) as u16, current_row);
         }
-        
-        col += chunk_len;
+        col += chunk.chunk_len;
     }
-    
-    // If cursor is at the very end of text
+
+    // Cursor at the very end
     if cursor_idx == chars.len() {
         return (col as u16, current_row);
     }
-    
     (0, 0)
 }
 
@@ -584,32 +589,14 @@ fn estimate_line_count(text: &str, max_width: u16) -> u16 {
 
     let mut lines = 1;
     let mut col = 0;
-    
-    let mut i = 0;
-    while i < chars.len() {
-        // Find next word end
-        let word_start = i;
-        while i < chars.len() && !chars[i].is_whitespace() {
-            i += 1;
-        }
-        let word_end = i;
-        let word_len = word_end - word_start;
-        
-        // Find trailing spaces
-        while i < chars.len() && chars[i].is_whitespace() {
-            i += 1;
-        }
-        let space_end = i;
-        let chunk_len = space_end - word_start;
-        
-        if col > 0 && col + word_len > max_width as usize {
+
+    for chunk in iter_word_chunks(&chars) {
+        if col > 0 && col + chunk.word_len > max_width as usize {
             lines += 1;
             col = 0;
         }
-        
-        col += chunk_len;
+        col += chunk.chunk_len;
     }
-    
     lines
 }
 

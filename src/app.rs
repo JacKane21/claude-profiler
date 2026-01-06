@@ -6,7 +6,11 @@ use crate::config::{
     Config, ENV_AUTH_TOKEN, ENV_BASE_URL, ENV_DEFAULT_HAIKU_MODEL, ENV_DEFAULT_OPUS_MODEL,
     ENV_DEFAULT_SONNET_MODEL, ENV_MODEL, ENV_PROXY_TARGET_URL, Profile,
 };
+use crate::openai_oauth::is_truthy;
 use crate::proxy;
+
+/// URL fragment indicating a Codex profile
+const CODEX_PROXY_INDICATOR: &str = "chatgpt.com/backend-api/codex";
 
 /// Possible application actions from user input
 #[derive(Debug, Clone, PartialEq)]
@@ -145,20 +149,18 @@ impl App {
 
     /// Check if the current profile being edited is a Codex profile
     pub fn is_codex_profile(&self) -> bool {
-        let proxy_url = self.proxy_url_input.value();
-        proxy_url.contains("chatgpt.com/backend-api/codex")
+        self.proxy_url_input.value().contains(CODEX_PROXY_INDICATOR)
     }
 
     /// Check if the currently selected profile (in the list) is a Codex profile
     pub fn is_selected_profile_codex(&self) -> bool {
         if let Some(profile) = self.current_profile() {
             if let Some(val) = profile.env.get("OPENAI_OAUTH") {
-                if val == "1" || val.eq_ignore_ascii_case("true") {
+                if is_truthy(val) {
                     return true;
                 }
             }
-            let proxy_url = env_value(profile, ENV_PROXY_TARGET_URL);
-            return proxy_url.contains("chatgpt.com/backend-api/codex");
+            return env_value(profile, ENV_PROXY_TARGET_URL).contains(CODEX_PROXY_INDICATOR);
         }
         false
     }
@@ -239,6 +241,11 @@ impl App {
             .and_then(|i| self.config.profiles.get(i))
     }
 
+    /// Set a status message to display to the user
+    fn set_status(&mut self, msg: impl Into<String>) {
+        self.status_message = Some(msg.into());
+    }
+
     /// Confirm selection and prepare to launch
     pub fn select_current(&mut self) {
         if let AppMode::Normal = &self.mode {
@@ -251,205 +258,207 @@ impl App {
     /// Handle an action
     pub fn handle_action(&mut self, action: Action) {
         match action {
-            Action::Quit => {
-                self.should_quit = true;
-            }
-            Action::MoveUp => {
-                self.previous();
-            }
-            Action::MoveDown => {
-                self.next();
-            }
-            Action::SelectProfile => {
-                self.select_current();
-            }
-            Action::ShowHelp => {
-                self.mode = AppMode::Help;
-            }
-            Action::HideHelp => {
-                self.mode = AppMode::Normal;
-            }
-            Action::EditProfile => {
-                if let Some(profile) = self.current_profile() {
-                    let name = profile.name.clone();
-                    let description = profile.description.clone();
-                    let api_key = env_value(profile, ENV_AUTH_TOKEN);
-                    let url = env_value(profile, ENV_BASE_URL);
-                    let proxy_url = env_value(profile, ENV_PROXY_TARGET_URL);
-                    
-                    let fallback_model = env_value(profile, ENV_MODEL);
-                    let haiku = profile
-                        .env
-                        .get(ENV_DEFAULT_HAIKU_MODEL)
-                        .cloned()
-                        .unwrap_or_else(|| fallback_model.clone());
-                    let sonnet = profile
-                        .env
-                        .get(ENV_DEFAULT_SONNET_MODEL)
-                        .cloned()
-                        .unwrap_or_else(|| fallback_model.clone());
-                    let opus = profile
-                        .env
-                        .get(ENV_DEFAULT_OPUS_MODEL)
-                        .cloned()
-                        .unwrap_or(fallback_model);
+            Action::Quit => self.should_quit = true,
+            Action::MoveUp => self.previous(),
+            Action::MoveDown => self.next(),
+            Action::SelectProfile => self.select_current(),
+            Action::ShowHelp => self.mode = AppMode::Help,
+            Action::HideHelp => self.mode = AppMode::Normal,
+            Action::EditProfile => self.enter_edit_mode(),
+            Action::CreateProfile => self.create_new_profile(),
+            Action::SaveEdit => self.save_profile_edit(),
+            Action::CancelEdit => self.mode = AppMode::Normal,
+            Action::ResetProfile => self.reset_current_profile(),
+            Action::ResetAll => self.reset_all_profiles(),
+            Action::ResetOAuth => self.clear_oauth_tokens(),
+            Action::DeleteProfile => self.delete_current_profile(),
+        }
+    }
 
-                    self.name_input = Input::new(name);
-                    self.description_input = Input::new(description);
-                    self.api_key_input = Input::new(api_key);
-                    self.url_input = Input::new(url);
-                    self.proxy_url_input = Input::new(proxy_url.clone());
-                    self.haiku_model_input = Input::new(haiku);
-                    self.sonnet_model_input = Input::new(sonnet);
-                    self.opus_model_input = Input::new(opus);
-                    self.reveal_api_key = false;
+    /// Enter edit mode for the currently selected profile
+    fn enter_edit_mode(&mut self) {
+        let Some(profile) = self.current_profile() else {
+            return;
+        };
 
-                    // Load Codex models if this is a Codex profile
-                    if proxy_url.contains("chatgpt.com/backend-api/codex") {
-                        self.load_codex_models();
-                    }
+        let name = profile.name.clone();
+        let description = profile.description.clone();
+        let api_key = env_value(profile, ENV_AUTH_TOKEN);
+        let url = env_value(profile, ENV_BASE_URL);
+        let proxy_url = env_value(profile, ENV_PROXY_TARGET_URL);
 
-                    self.mode = AppMode::EditProfile {
-                        focused_field: EDIT_FIELD_NAME,
-                        is_creating: false,
-                    };
+        let fallback_model = env_value(profile, ENV_MODEL);
+        let haiku = profile
+            .env
+            .get(ENV_DEFAULT_HAIKU_MODEL)
+            .cloned()
+            .unwrap_or_else(|| fallback_model.clone());
+        let sonnet = profile
+            .env
+            .get(ENV_DEFAULT_SONNET_MODEL)
+            .cloned()
+            .unwrap_or_else(|| fallback_model.clone());
+        let opus = profile
+            .env
+            .get(ENV_DEFAULT_OPUS_MODEL)
+            .cloned()
+            .unwrap_or(fallback_model);
+
+        self.name_input = Input::new(name);
+        self.description_input = Input::new(description);
+        self.api_key_input = Input::new(api_key);
+        self.url_input = Input::new(url);
+        self.proxy_url_input = Input::new(proxy_url.clone());
+        self.haiku_model_input = Input::new(haiku);
+        self.sonnet_model_input = Input::new(sonnet);
+        self.opus_model_input = Input::new(opus);
+        self.reveal_api_key = false;
+
+        if proxy_url.contains(CODEX_PROXY_INDICATOR) {
+            self.load_codex_models();
+        }
+
+        self.mode = AppMode::EditProfile {
+            focused_field: EDIT_FIELD_NAME,
+            is_creating: false,
+        };
+    }
+
+    /// Initialize the form for creating a new profile
+    fn create_new_profile(&mut self) {
+        self.name_input = Input::new("new-profile".to_string());
+        self.description_input = Input::new("My custom profile".to_string());
+        self.api_key_input = Input::default();
+        self.url_input = Input::new(proxy::PROXY_ANTHROPIC_URL.to_string());
+        self.proxy_url_input = Input::default();
+        self.haiku_model_input = Input::default();
+        self.sonnet_model_input = Input::default();
+        self.opus_model_input = Input::default();
+        self.reveal_api_key = false;
+        self.mode = AppMode::EditProfile {
+            focused_field: EDIT_FIELD_NAME,
+            is_creating: true,
+        };
+    }
+
+    /// Save the current profile edit
+    fn save_profile_edit(&mut self) {
+        let AppMode::EditProfile { is_creating, .. } = self.mode else {
+            return;
+        };
+
+        let name = self.name_input.value().to_string();
+        let description = self.description_input.value().to_string();
+        let updates = [
+            (ENV_AUTH_TOKEN, self.api_key_input.value().to_string()),
+            (ENV_BASE_URL, self.url_input.value().to_string()),
+            (ENV_PROXY_TARGET_URL, self.proxy_url_input.value().to_string()),
+            (ENV_DEFAULT_HAIKU_MODEL, self.haiku_model_input.value().to_string()),
+            (ENV_DEFAULT_SONNET_MODEL, self.sonnet_model_input.value().to_string()),
+            (ENV_DEFAULT_OPUS_MODEL, self.opus_model_input.value().to_string()),
+        ];
+
+        if is_creating {
+            let mut env = HashMap::new();
+            for (key, value) in updates {
+                if !value.is_empty() {
+                    env.insert(key.to_string(), value);
                 }
             }
-            Action::CreateProfile => {
-                self.name_input = Input::new("new-profile".to_string());
-                self.description_input = Input::new("My custom profile".to_string());
-                self.api_key_input = Input::default();
-                self.url_input = Input::new(proxy::PROXY_ANTHROPIC_URL.to_string());
-                self.proxy_url_input = Input::default();
-                self.haiku_model_input = Input::default();
-                self.sonnet_model_input = Input::default();
-                self.opus_model_input = Input::default();
-                self.reveal_api_key = false;
-                self.mode = AppMode::EditProfile {
-                    focused_field: EDIT_FIELD_NAME,
-                    is_creating: true,
-                };
-            }
-            Action::SaveEdit => {
-                if let AppMode::EditProfile { is_creating, .. } = self.mode {
-                    let name = self.name_input.value().to_string();
-                    let description = self.description_input.value().to_string();
-                    let api_key = self.api_key_input.value().to_string();
-                    let url = self.url_input.value().to_string();
-                    let proxy_url = self.proxy_url_input.value().to_string();
-                    let haiku = self.haiku_model_input.value().to_string();
-                    let sonnet = self.sonnet_model_input.value().to_string();
-                    let opus = self.opus_model_input.value().to_string();
-
-                    let updates = [
-                        (ENV_AUTH_TOKEN, api_key),
-                        (ENV_BASE_URL, url),
-                        (ENV_PROXY_TARGET_URL, proxy_url),
-                        (ENV_DEFAULT_HAIKU_MODEL, haiku),
-                        (ENV_DEFAULT_SONNET_MODEL, sonnet),
-                        (ENV_DEFAULT_OPUS_MODEL, opus),
-                    ];
-
-                    if is_creating {
-                        let mut env = HashMap::new();
-                        for (key, value) in updates {
-                            if !value.is_empty() {
-                                env.insert(key.to_string(), value);
-                            }
-                        }
-                        let new_profile = Profile {
-                            name: name.clone(),
-                            description,
-                            env,
-                        };
-                        self.config.profiles.push(new_profile);
-                        self.status_message = Some(format!("Profile '{}' created", name));
-                        // Select the newly created profile
-                        self.list_state.select(Some(self.config.profiles.len() - 1));
-                    } else if let Some(i) = self.list_state.selected()
-                        && let Some(profile) = self.config.profiles.get_mut(i)
-                    {
-                        profile.name = name;
-                        profile.description = description;
-                        for (key, value) in updates {
-                            if value.is_empty() {
-                                profile.env.remove(key);
-                            } else {
-                                profile.env.insert(key.to_string(), value);
-                            }
-                        }
-                        self.status_message = Some("Profile updated successfully".to_string());
-                    }
-
-                    if let Err(e) = self.config.save() {
-                        self.status_message = Some(format!("Failed to save config: {}", e));
-                    }
-                    self.mode = AppMode::Normal;
-                }
-            }
-            Action::CancelEdit => {
-                self.mode = AppMode::Normal;
-            }
-            Action::ResetProfile => {
-                if let Some(i) = self.list_state.selected() {
-                    let profile = &mut self.config.profiles[i];
-                    let name = profile.name.clone();
-
-                    let default_config = Config::create_default();
-                    if let Some(default_profile) =
-                        default_config.profiles.into_iter().find(|p| p.name == name)
-                    {
-                        self.config.profiles[i] = default_profile;
-                        self.status_message = Some(format!("Profile '{}' reset to default", name));
-                    } else {
-                        profile.env.clear();
-                        self.status_message =
-                            Some(format!("Profile '{}' environment cleared", name));
-                    }
-
-                    if let Err(e) = self.config.save() {
-                        self.status_message = Some(format!("Failed to save config: {}", e));
-                    }
-                }
-            }
-            Action::ResetAll => {
-                // Clear OAuth tokens first
-                let _ = crate::openai_oauth::clear_tokens();
-
-                self.config = Config::create_default();
-                if let Err(e) = self.config.save() {
-                    self.status_message = Some(format!("Failed to reset config: {}", e));
+            let new_profile = Profile {
+                name: name.clone(),
+                description,
+                env,
+            };
+            self.config.profiles.push(new_profile);
+            self.set_status(format!("Profile '{}' created", name));
+            self.list_state.select(Some(self.config.profiles.len() - 1));
+        } else if let Some(i) = self.list_state.selected()
+            && let Some(profile) = self.config.profiles.get_mut(i)
+        {
+            profile.name = name;
+            profile.description = description;
+            for (key, value) in updates {
+                if value.is_empty() {
+                    profile.env.remove(key);
                 } else {
-                    self.status_message = Some("All profiles and OAuth tokens reset".to_string());
-                    let default_index = self.config.default_profile_index();
-                    self.list_state.select(Some(default_index));
+                    profile.env.insert(key.to_string(), value);
                 }
             }
-            Action::ResetOAuth => {
-                if let Err(e) = crate::openai_oauth::clear_tokens() {
-                    self.status_message = Some(format!("Failed to clear OAuth tokens: {}", e));
-                } else {
-                    self.status_message = Some("OAuth tokens cleared. Sign in again on launch.".to_string());
-                }
-            }
-            Action::DeleteProfile => {
-                if let Some(i) = self.list_state.selected() {
-                    let name = self.config.profiles[i].name.clone();
-                    self.config.profiles.remove(i);
-                    self.status_message = Some(format!("Profile '{}' deleted", name));
+            self.set_status("Profile updated successfully");
+        }
 
-                    let len = self.config.profiles.len();
-                    if len == 0 {
-                        self.list_state.select(None);
-                    } else if i >= len {
-                        self.list_state.select(Some(len - 1));
-                    }
+        if let Err(e) = self.config.save() {
+            self.set_status(format!("Failed to save config: {}", e));
+        }
+        self.mode = AppMode::Normal;
+    }
 
-                    if let Err(e) = self.config.save() {
-                        self.status_message = Some(format!("Failed to save config: {}", e));
-                    }
-                }
-            }
+    /// Reset the currently selected profile to its default state
+    fn reset_current_profile(&mut self) {
+        let Some(i) = self.list_state.selected() else {
+            return;
+        };
+
+        let name = self.config.profiles[i].name.clone();
+        let default_config = Config::create_default();
+
+        if let Some(default_profile) = default_config.profiles.into_iter().find(|p| p.name == name)
+        {
+            self.config.profiles[i] = default_profile;
+            self.set_status(format!("Profile '{}' reset to default", name));
+        } else {
+            self.config.profiles[i].env.clear();
+            self.set_status(format!("Profile '{}' environment cleared", name));
+        }
+
+        if let Err(e) = self.config.save() {
+            self.set_status(format!("Failed to save config: {}", e));
+        }
+    }
+
+    /// Reset all profiles to defaults and clear OAuth tokens
+    fn reset_all_profiles(&mut self) {
+        let _ = crate::openai_oauth::clear_tokens();
+        self.config = Config::create_default();
+
+        if let Err(e) = self.config.save() {
+            self.set_status(format!("Failed to reset config: {}", e));
+        } else {
+            self.set_status("All profiles and OAuth tokens reset");
+            let default_index = self.config.default_profile_index();
+            self.list_state.select(Some(default_index));
+        }
+    }
+
+    /// Clear OAuth tokens
+    fn clear_oauth_tokens(&mut self) {
+        if let Err(e) = crate::openai_oauth::clear_tokens() {
+            self.set_status(format!("Failed to clear OAuth tokens: {}", e));
+        } else {
+            self.set_status("OAuth tokens cleared. Sign in again on launch.");
+        }
+    }
+
+    /// Delete the currently selected profile
+    fn delete_current_profile(&mut self) {
+        let Some(i) = self.list_state.selected() else {
+            return;
+        };
+
+        let name = self.config.profiles[i].name.clone();
+        self.config.profiles.remove(i);
+        self.set_status(format!("Profile '{}' deleted", name));
+
+        let len = self.config.profiles.len();
+        if len == 0 {
+            self.list_state.select(None);
+        } else if i >= len {
+            self.list_state.select(Some(len - 1));
+        }
+
+        if let Err(e) = self.config.save() {
+            self.set_status(format!("Failed to save config: {}", e));
         }
     }
 

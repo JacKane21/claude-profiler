@@ -473,10 +473,9 @@ fn stringify_value(value: &Value) -> String {
     }
 }
 
-fn response_text_part(role: &str, text: &str) -> ResponseInputContentPart {
-    // For Responses *input*, content parts should be `input_text` even when the role is `assistant`.
+fn response_text_part(text: &str) -> ResponseInputContentPart {
+    // For Responses *input*, content parts should be `input_text` regardless of role.
     // `output_text` is used in Responses *output* payloads, and can cause upstream validation errors.
-    let _ = role;
     ResponseInputContentPart::InputText {
         text: text.to_string(),
     }
@@ -666,7 +665,7 @@ fn convert_anthropic_message(msg: &AnthropicMessage) -> Vec<ResponseInputItem> {
     match &msg.content {
         AnthropicContent::Text(text) => vec![ResponseInputItem::Message {
             role: msg.role.clone(),
-            content: vec![response_text_part(&msg.role, text)],
+            content: vec![response_text_part(text)],
         }],
         AnthropicContent::Blocks(blocks) => {
             let mut items = Vec::new();
@@ -687,7 +686,7 @@ fn convert_anthropic_message(msg: &AnthropicMessage) -> Vec<ResponseInputItem> {
             for block in blocks {
                 match block {
                     ContentBlock::Text { text } => {
-                        content_parts.push(response_text_part(&msg.role, text));
+                        content_parts.push(response_text_part(text));
                     }
                     ContentBlock::Image { source } => {
                         let data_url = format!("data:{};base64,{}", source.media_type, source.data);
