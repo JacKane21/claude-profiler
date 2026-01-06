@@ -21,6 +21,9 @@ use std::ops::ControlFlow;
 use std::sync::Arc;
 use std::time::Duration;
 
+use crate::codex_instructions::{get_codex_instructions, CLAUDE_CODE_BRIDGE};
+use crate::openai_oauth;
+
 /// Default port for the proxy server
 pub const PROXY_PORT: u16 = 4000;
 
@@ -207,6 +210,9 @@ pub struct ResponsesRequest {
     pub input: Vec<ResponseInputItem>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub instructions: Option<String>,
+    /// ChatGPT Codex backend requires `store: false` (and it is safe for normal OpenAI Responses API usage).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub store: Option<bool>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub max_output_tokens: Option<u32>,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -221,6 +227,8 @@ pub struct ResponsesRequest {
     pub tool_choice: Option<Value>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub reasoning: Option<ResponseReasoning>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub include: Option<Vec<String>>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -272,24 +280,17 @@ pub struct ResponseImageUrl {
     pub url: String,
 }
 
+/// Tool format for OpenAI Responses API
+/// Note: Codex API expects the flat structure with name/description/parameters at top level
 #[derive(Debug, Clone, Serialize, Deserialize)]
-#[serde(tag = "type")]
-pub enum ResponseTool {
-    #[serde(rename = "function")]
-    Function {
-        name: String,
-        #[serde(skip_serializing_if = "Option::is_none")]
-        description: Option<String>,
-        #[serde(skip_serializing_if = "Option::is_none")]
-        parameters: Option<Value>,
-    },
-    #[serde(rename = "mcp")]
-    Mcp {
-        server_label: String,
-        server_url: String,
-        #[serde(skip_serializing_if = "Option::is_none")]
-        allowed_tools: Option<Vec<String>>,
-    },
+pub struct ResponseTool {
+    #[serde(rename = "type")]
+    pub tool_type: String,
+    pub name: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub description: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub parameters: Option<Value>,
 }
 
 /// OpenAI Responses response (partial)
@@ -473,14 +474,39 @@ fn stringify_value(value: &Value) -> String {
 }
 
 fn response_text_part(role: &str, text: &str) -> ResponseInputContentPart {
-    if role == "assistant" {
-        ResponseInputContentPart::OutputText {
-            text: text.to_string(),
+    // For Responses *input*, content parts should be `input_text` even when the role is `assistant`.
+    // `output_text` is used in Responses *output* payloads, and can cause upstream validation errors.
+    let _ = role;
+    ResponseInputContentPart::InputText {
+        text: text.to_string(),
+    }
+}
+
+fn map_tool_choice_for_openai(value: &Value) -> Option<Value> {
+    if let Some(s) = value.as_str() {
+        let lower = s.trim().to_ascii_lowercase();
+        return match lower.as_str() {
+            "auto" => Some(Value::String("auto".to_string())),
+            "none" => Some(Value::String("none".to_string())),
+            "required" | "any" => Some(Value::String("required".to_string())),
+            _ => None,
+        };
+    }
+
+    let obj = value.as_object()?;
+    let ty = obj.get("type")?.as_str()?.to_ascii_lowercase();
+    match ty.as_str() {
+        "auto" => Some(Value::String("auto".to_string())),
+        "none" => Some(Value::String("none".to_string())),
+        "any" => Some(Value::String("required".to_string())),
+        "tool" => {
+            let name = obj.get("name")?.as_str()?;
+            Some(serde_json::json!({
+                "type": "function",
+                "function": { "name": name }
+            }))
         }
-    } else {
-        ResponseInputContentPart::InputText {
-            text: text.to_string(),
-        }
+        _ => None,
     }
 }
 
@@ -530,6 +556,34 @@ fn push_tool_use(content: &mut Vec<ResponseContent>, id: &str, name: &str, argum
     });
 }
 
+// ============================================================================
+// Reasoning Effort Helpers (Codex model suffix parsing)
+// ============================================================================
+
+/// Reasoning effort suffixes in order of specificity (longest first to avoid partial matches)
+const REASONING_SUFFIXES: [&str; 5] = ["-xhigh", "-high", "-medium", "-low", "-none"];
+
+/// Extract reasoning effort from model suffix (e.g., "gpt-5.1-codex-high" → Some("high"))
+fn parse_reasoning_effort(model: &str) -> Option<&'static str> {
+    for suffix in REASONING_SUFFIXES {
+        if model.ends_with(suffix) {
+            return Some(&suffix[1..]); // Strip the leading dash
+        }
+    }
+    None
+}
+
+/// Strip reasoning suffix to get base model name for API call
+/// (e.g., "gpt-5.1-codex-high" → "gpt-5.1-codex")
+fn normalize_model_for_api(model: &str) -> &str {
+    for suffix in REASONING_SUFFIXES {
+        if model.ends_with(suffix) {
+            return &model[..model.len() - suffix.len()];
+        }
+    }
+    model
+}
+
 /// Convert Anthropic request to OpenAI Responses request
 pub fn anthropic_to_responses(req: &AnthropicRequest, target_model: &str) -> ResponsesRequest {
     let mut input = Vec::new();
@@ -539,7 +593,8 @@ pub fn anthropic_to_responses(req: &AnthropicRequest, target_model: &str) -> Res
         input.extend(convert_anthropic_message(msg));
     }
 
-    // Add system prompt as instructions if present
+    // Add system prompt as instructions if present (for non-Codex backends)
+    // Note: For Codex backend, this gets overridden in handle_responses_request
     let instructions = system_prompt_text_opt(req.system.as_ref());
 
     // Convert tools
@@ -551,7 +606,8 @@ pub fn anthropic_to_responses(req: &AnthropicRequest, target_model: &str) -> Res
                 let description = tool.get("description").and_then(|d| d.as_str());
                 let input_schema = tool.get("input_schema").cloned();
 
-                Some(ResponseTool::Function {
+                Some(ResponseTool {
+                    tool_type: "function".to_string(),
                     name: name.to_string(),
                     description: description.map(String::from),
                     parameters: input_schema,
@@ -562,32 +618,46 @@ pub fn anthropic_to_responses(req: &AnthropicRequest, target_model: &str) -> Res
         (!mapped.is_empty()).then_some(mapped)
     });
 
-    let reasoning = match &req.thinking {
-        Some(ThinkingConfig::Enabled { budget_tokens }) => {
-            let effort = match budget_tokens {
-                Some(budget) if *budget >= 4096 => "high",
-                Some(budget) if *budget >= 1024 => "medium",
-                Some(_) => "low",
-                None => "medium",
-            };
-            Some(ResponseReasoning {
-                effort: Some(effort.to_string()),
-            })
+    // Determine reasoning effort: model suffix takes precedence, then thinking config
+    let reasoning = if let Some(effort) = parse_reasoning_effort(target_model) {
+        // Model suffix specifies reasoning effort (e.g., gpt-5.1-codex-high)
+        Some(ResponseReasoning {
+            effort: Some(effort.to_string()),
+        })
+    } else {
+        // Fall back to thinking config mapping
+        match &req.thinking {
+            Some(ThinkingConfig::Enabled { budget_tokens }) => {
+                let effort = match budget_tokens {
+                    Some(budget) if *budget >= 4096 => "high",
+                    Some(budget) if *budget >= 1024 => "medium",
+                    Some(_) => "low",
+                    None => "medium",
+                };
+                Some(ResponseReasoning {
+                    effort: Some(effort.to_string()),
+                })
+            }
+            _ => None,
         }
-        _ => None,
     };
 
+    // Normalize model name for API (strip reasoning suffix)
+    let api_model = normalize_model_for_api(target_model);
+
     ResponsesRequest {
-        model: target_model.to_string(),
+        model: api_model.to_string(),
         input,
         instructions,
+        store: None,
         max_output_tokens: req.max_tokens,
         temperature: req.temperature,
         top_p: req.top_p,
         stream: req.stream,
         tools,
-        tool_choice: req.tool_choice.clone(),
+        tool_choice: req.tool_choice.as_ref().and_then(map_tool_choice_for_openai),
         reasoning,
+        include: None,
     }
 }
 
@@ -704,15 +774,18 @@ pub fn anthropic_to_chat(req: &AnthropicRequest, target_model: &str) -> ChatComp
         (!mapped.is_empty()).then_some(mapped)
     });
 
+    // Normalize model name for API (strip reasoning suffix)
+    let api_model = normalize_model_for_api(target_model);
+
     ChatCompletionRequest {
-        model: target_model.to_string(),
+        model: api_model.to_string(),
         messages,
         max_tokens: req.max_tokens,
         temperature: req.temperature,
         top_p: req.top_p,
         stream: req.stream,
         tools,
-        tool_choice: req.tool_choice.clone(),
+        tool_choice: req.tool_choice.as_ref().and_then(map_tool_choice_for_openai),
     }
 }
 
@@ -827,8 +900,11 @@ pub fn anthropic_to_completions(req: &AnthropicRequest, target_model: &str) -> C
         prompt.push_str("Assistant: ");
     }
 
+    // Normalize model name for API (strip reasoning suffix)
+    let api_model = normalize_model_for_api(target_model);
+
     CompletionsRequest {
-        model: target_model.to_string(),
+        model: api_model.to_string(),
         prompt,
         max_tokens: req.max_tokens,
         temperature: req.temperature,
@@ -1245,6 +1321,22 @@ fn extract_auth_header(headers: &HeaderMap) -> Option<String> {
     None
 }
 
+fn is_chatgpt_codex_backend(url: &str) -> bool {
+    // Minimal heuristic: the Codex backend lives under chatgpt.com/backend-api/codex.
+    url.contains("://chatgpt.com/backend-api/codex/")
+}
+
+fn strip_bearer_prefix(auth: &str) -> Option<&str> {
+    let trimmed = auth.trim();
+    if trimmed.len() < 7 {
+        return None;
+    }
+    if trimmed[..6].eq_ignore_ascii_case("bearer") && trimmed.as_bytes()[6].is_ascii_whitespace() {
+        return Some(trimmed[7..].trim());
+    }
+    None
+}
+
 async fn send_json_request<T: Serialize>(
     client: &reqwest::Client,
     url: &str,
@@ -1255,6 +1347,22 @@ async fn send_json_request<T: Serialize>(
     if let Some(auth) = auth_header {
         builder = builder.header(header::AUTHORIZATION, auth);
     }
+
+    // ChatGPT Codex backend requires extra headers (Codex CLI parity).
+    if is_chatgpt_codex_backend(url) {
+        builder = builder
+            .header("accept", "text/event-stream")
+            .header("OpenAI-Beta", "responses=experimental")
+            .header("originator", "codex_cli_rs");
+
+        if let Some(auth) = auth_header
+            && let Some(token) = strip_bearer_prefix(auth)
+            && let Some(account_id) = openai_oauth::decode_chatgpt_account_id(token)
+        {
+            builder = builder.header("chatgpt-account-id", account_id);
+        }
+    }
+
     builder.json(body).send().await.map_err(|e| UpstreamError {
         status: StatusCode::BAD_GATEWAY,
         body: format!("Failed to connect to upstream: {}", e),
@@ -1399,12 +1507,48 @@ async fn messages_handler(
 
 async fn handle_responses_request(
     state: Arc<ProxyState>,
-    request: ResponsesRequest,
+    mut request: ResponsesRequest,
     original_model: String,
     include_thinking: bool,
     is_streaming: bool,
     auth_header: Option<String>,
 ) -> Result<Response, UpstreamError> {
+    if is_chatgpt_codex_backend(&state.responses_url) {
+        request.store = Some(false);
+        request.stream = Some(true);
+        request.include = Some(vec!["reasoning.encrypted_content".to_string()]);
+
+        // Fetch official Codex instructions from GitHub (required by Codex API)
+        match get_codex_instructions(&request.model).await {
+            Ok(instructions) => {
+                request.instructions = Some(instructions);
+            }
+            Err(e) => {
+                eprintln!("[proxy] Failed to fetch Codex instructions: {}", e);
+                return Err(UpstreamError {
+                    status: StatusCode::INTERNAL_SERVER_ERROR,
+                    body: format!("Failed to fetch Codex instructions: {}", e),
+                });
+            }
+        }
+
+        // Add Claude Code bridge prompt as the developer message
+        let bridge_message = ResponseInputItem::Message {
+            role: "developer".to_string(),
+            content: vec![ResponseInputContentPart::InputText {
+                text: CLAUDE_CODE_BRIDGE.to_string(),
+            }],
+        };
+        request.input.insert(0, bridge_message);
+
+        // Remove unsupported parameters for Codex API
+        // The Codex API only supports: model, store, stream, instructions, input, tools, reasoning, text, include
+        request.max_output_tokens = None;
+        request.temperature = None;
+        request.top_p = None;
+        request.tool_choice = None;
+    }
+
     let response = send_json_request(
         &state.client,
         &state.responses_url,
@@ -1419,7 +1563,43 @@ async fn handle_responses_request(
         let stream = create_anthropic_stream(byte_stream, original_model, include_thinking);
         return Ok(sse_response(stream));
     }
-    let openai_resp = parse_json::<ResponsesResponse>(response).await?;
+
+    // The ChatGPT Codex backend can return SSE even when stream=false.
+    // When that happens, extract the final `response` object from the SSE and treat it as JSON.
+    let openai_resp = match response
+        .headers()
+        .get(header::CONTENT_TYPE)
+        .and_then(|v| v.to_str().ok())
+    {
+        Some(ct) if ct.to_ascii_lowercase().contains("text/event-stream") => {
+            let full = response.text().await.unwrap_or_default();
+            let mut final_response: Option<Value> = None;
+            for line in full.lines() {
+                let Some(data) = line.strip_prefix("data: ") else {
+                    continue;
+                };
+                if data == "[DONE]" {
+                    continue;
+                }
+                let Ok(event) = serde_json::from_str::<Value>(data) else {
+                    continue;
+                };
+                let event_type = event.get("type").and_then(|t| t.as_str()).unwrap_or("");
+                if event_type == "response.done" || event_type == "response.completed" {
+                    final_response = event.get("response").cloned();
+                }
+            }
+            let final_response = final_response.ok_or_else(|| UpstreamError {
+                status: StatusCode::INTERNAL_SERVER_ERROR,
+                body: "Could not find final response in SSE stream".to_string(),
+            })?;
+            serde_json::from_value::<ResponsesResponse>(final_response).map_err(|e| UpstreamError {
+                status: StatusCode::INTERNAL_SERVER_ERROR,
+                body: format!("Parse error: {}", e),
+            })?
+        }
+        _ => parse_json::<ResponsesResponse>(response).await?,
+    };
 
     let anthropic_resp = responses_to_anthropic(&openai_resp, &original_model, include_thinking);
     Ok(Json(anthropic_resp).into_response())
@@ -2382,18 +2562,10 @@ mod tests {
 
         let tools = mapped.tools.expect("tools mapped");
         assert_eq!(tools.len(), 1);
-        match &tools[0] {
-            ResponseTool::Function {
-                name,
-                description,
-                parameters,
-            } => {
-                assert_eq!(name, "tool1");
-                assert_eq!(description.as_deref(), Some("desc"));
-                assert!(parameters.is_some());
-            }
-            _ => panic!("unexpected tool type"),
-        }
+        assert_eq!(tools[0].tool_type, "function");
+        assert_eq!(tools[0].name, "tool1");
+        assert_eq!(tools[0].description.as_deref(), Some("desc"));
+        assert!(tools[0].parameters.is_some());
 
         let reasoning = mapped.reasoning.expect("reasoning mapped");
         assert_eq!(reasoning.effort.as_deref(), Some("medium"));

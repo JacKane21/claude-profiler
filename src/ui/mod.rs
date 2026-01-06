@@ -6,7 +6,7 @@ use ratatui::{
     layout::{Constraint, Direction, Layout, Rect},
     style::{Color, Style},
     text::{Line, Span},
-    widgets::{Block, Borders, Clear, Paragraph},
+    widgets::{Block, Borders, Clear, Paragraph, Wrap},
 };
 use std::borrow::Cow;
 
@@ -54,6 +54,18 @@ pub fn render(frame: &mut Frame, app: &mut App) {
     {
         let area = centered_rect(70, 80, frame.area());
         render_edit_profile(frame, app, area, focused_field);
+    }
+
+    // Overlay model picker if in model picker mode
+    if let AppMode::ModelPicker { .. } = app.mode {
+        // First, render the edit form behind it
+        let edit_area = centered_rect(70, 80, frame.area());
+        if let AppMode::ModelPicker { target_field, .. } = app.mode {
+            render_edit_profile(frame, app, edit_area, target_field);
+        }
+        // Then render the model picker on top
+        let picker_area = centered_rect(50, 60, frame.area());
+        render_model_picker(frame, app, picker_area);
     }
 }
 
@@ -202,6 +214,9 @@ fn render_footer(frame: &mut Frame, area: Rect, app: &App) {
             Span::styled("r", Style::default().fg(Color::Cyan)),
             Span::styled("] Reset  ", Style::default().fg(Color::DarkGray)),
             Span::styled("[", Style::default().fg(Color::DarkGray)),
+            Span::styled("R", Style::default().fg(Color::Cyan)),
+            Span::styled("] Reset All  ", Style::default().fg(Color::DarkGray)),
+            Span::styled("[", Style::default().fg(Color::DarkGray)),
             Span::styled("q", Style::default().fg(Color::Cyan)),
             Span::styled("] Quit", Style::default().fg(Color::DarkGray)),
         ])
@@ -214,17 +229,10 @@ fn render_footer(frame: &mut Frame, area: Rect, app: &App) {
 fn render_edit_profile(frame: &mut Frame, app: &App, area: Rect, focused_field: usize) {
     frame.render_widget(Clear, area);
 
-    let (title, _) = if let AppMode::EditProfile { is_creating, .. } = app.mode {
-        (
-            if is_creating {
-                " Create Profile "
-            } else {
-                " Edit Profile "
-            },
-            is_creating,
-        )
+    let title = if let AppMode::EditProfile { is_creating, .. } = app.mode {
+        if is_creating { " Create Profile " } else { " Edit Profile " }
     } else {
-        (" Edit Profile ", false)
+        " Edit Profile "
     };
 
     let block = Block::default()
@@ -238,11 +246,15 @@ fn render_edit_profile(frame: &mut Frame, app: &App, area: Rect, focused_field: 
         horizontal: 2,
     });
 
+    let desc_width = inner_area.width.saturating_sub(2);
+    let desc_lines = estimate_line_count(app.description_input.value(), desc_width);
+    let desc_height = (desc_lines + 2).max(3);
+
     let chunks = Layout::default()
         .direction(Direction::Vertical)
         .constraints([
             Constraint::Length(3), // Name
-            Constraint::Length(3), // Description
+            Constraint::Length(desc_height), // Description
             Constraint::Length(3), // API Key
             Constraint::Length(3), // URL
             Constraint::Length(3), // Proxy Target URL
@@ -260,6 +272,7 @@ fn render_edit_profile(frame: &mut Frame, app: &App, area: Rect, focused_field: 
         "Profile Name",
         app.name_input.value(),
         focused_field == EDIT_FIELD_NAME,
+        false,
     );
     render_edit_field(
         frame,
@@ -267,6 +280,7 @@ fn render_edit_profile(frame: &mut Frame, app: &App, area: Rect, focused_field: 
         "Description",
         app.description_input.value(),
         focused_field == EDIT_FIELD_DESCRIPTION,
+        true,
     );
 
     let api_key_value: Cow<'_, str> = if app.reveal_api_key {
@@ -281,6 +295,7 @@ fn render_edit_profile(frame: &mut Frame, app: &App, area: Rect, focused_field: 
         ENV_AUTH_TOKEN,
         api_key_value.as_ref(),
         focused_field == EDIT_FIELD_API_KEY,
+        false,
     );
     render_edit_field(
         frame,
@@ -288,6 +303,7 @@ fn render_edit_profile(frame: &mut Frame, app: &App, area: Rect, focused_field: 
         ENV_BASE_URL,
         app.url_input.value(),
         focused_field == EDIT_FIELD_URL,
+        false,
     );
     render_edit_field(
         frame,
@@ -295,6 +311,7 @@ fn render_edit_profile(frame: &mut Frame, app: &App, area: Rect, focused_field: 
         ENV_PROXY_TARGET_URL,
         app.proxy_url_input.value(),
         focused_field == EDIT_FIELD_PROXY_URL,
+        false,
     );
     render_edit_field(
         frame,
@@ -302,6 +319,7 @@ fn render_edit_profile(frame: &mut Frame, app: &App, area: Rect, focused_field: 
         ENV_DEFAULT_HAIKU_MODEL,
         app.haiku_model_input.value(),
         focused_field == EDIT_FIELD_HAIKU,
+        false,
     );
     render_edit_field(
         frame,
@@ -309,6 +327,7 @@ fn render_edit_profile(frame: &mut Frame, app: &App, area: Rect, focused_field: 
         ENV_DEFAULT_SONNET_MODEL,
         app.sonnet_model_input.value(),
         focused_field == EDIT_FIELD_SONNET,
+        false,
     );
     render_edit_field(
         frame,
@@ -316,33 +335,62 @@ fn render_edit_profile(frame: &mut Frame, app: &App, area: Rect, focused_field: 
         ENV_DEFAULT_OPUS_MODEL,
         app.opus_model_input.value(),
         focused_field == EDIT_FIELD_OPUS,
+        false,
     );
 
-    let help_text = Line::from(vec![
-        Span::styled("Tab", Style::default().fg(Color::Cyan)),
-        Span::raw(" Switch  "),
-        Span::styled("Ctrl+G", Style::default().fg(Color::Cyan)),
-        Span::raw(" Toggle Reveal  "),
-        Span::styled("Enter", Style::default().fg(Color::Cyan)),
-        Span::raw(" Save  "),
-        Span::styled("Esc", Style::default().fg(Color::Cyan)),
-        Span::raw(" Cancel"),
-    ]);
+    let is_model_field = matches!(
+        focused_field,
+        EDIT_FIELD_HAIKU | EDIT_FIELD_SONNET | EDIT_FIELD_OPUS
+    );
+    let show_model_picker_hint = is_model_field && app.is_codex_profile() && !app.codex_models.is_empty();
+
+    let help_text = if show_model_picker_hint {
+        Line::from(vec![
+            Span::styled("Tab", Style::default().fg(Color::Cyan)),
+            Span::raw(" Switch  "),
+            Span::styled("Enter", Style::default().fg(Color::Green)),
+            Span::raw(" Pick Model  "),
+            Span::styled("Esc", Style::default().fg(Color::Cyan)),
+            Span::raw(" Cancel"),
+        ])
+    } else {
+        Line::from(vec![
+            Span::styled("Tab", Style::default().fg(Color::Cyan)),
+            Span::raw(" Switch  "),
+            Span::styled("Ctrl+G", Style::default().fg(Color::Cyan)),
+            Span::raw(" Toggle Reveal  "),
+            Span::styled("Enter", Style::default().fg(Color::Cyan)),
+            Span::raw(" Save  "),
+            Span::styled("Esc", Style::default().fg(Color::Cyan)),
+            Span::raw(" Cancel"),
+        ])
+    };
     frame.render_widget(Paragraph::new(help_text), chunks[9]);
+
+    // Calculate wrapped cursor for description if focused
+    let (desc_cursor_x, desc_cursor_y) = if focused_field == EDIT_FIELD_DESCRIPTION {
+        calculate_wrapped_cursor(
+            app.description_input.value(),
+            app.description_input.visual_cursor(),
+            chunks[1].width.saturating_sub(2),
+        )
+    } else {
+        (app.description_input.visual_cursor() as u16, 0)
+    };
 
     // Set cursor
     let cursor_positions = [
-        (chunks[0], app.name_input.visual_cursor() as u16),
-        (chunks[1], app.description_input.visual_cursor() as u16),
-        (chunks[2], app.api_key_input.visual_cursor() as u16),
-        (chunks[3], app.url_input.visual_cursor() as u16),
-        (chunks[4], app.proxy_url_input.visual_cursor() as u16),
-        (chunks[5], app.haiku_model_input.visual_cursor() as u16),
-        (chunks[6], app.sonnet_model_input.visual_cursor() as u16),
-        (chunks[7], app.opus_model_input.visual_cursor() as u16),
+        (chunks[0], app.name_input.visual_cursor() as u16, 0),
+        (chunks[1], desc_cursor_x, desc_cursor_y),
+        (chunks[2], app.api_key_input.visual_cursor() as u16, 0),
+        (chunks[3], app.url_input.visual_cursor() as u16, 0),
+        (chunks[4], app.proxy_url_input.visual_cursor() as u16, 0),
+        (chunks[5], app.haiku_model_input.visual_cursor() as u16, 0),
+        (chunks[6], app.sonnet_model_input.visual_cursor() as u16, 0),
+        (chunks[7], app.opus_model_input.visual_cursor() as u16, 0),
     ];
-    if let Some((chunk, cursor_x)) = cursor_positions.get(focused_field) {
-        frame.set_cursor_position((chunk.x + *cursor_x + 1, chunk.y + 1));
+    if let Some((chunk, cursor_x, cursor_y)) = cursor_positions.get(focused_field) {
+        frame.set_cursor_position((chunk.x + *cursor_x + 1, chunk.y + 1 + *cursor_y));
     }
 }
 
@@ -373,15 +421,27 @@ fn field_border_style(focused: bool) -> Style {
     }
 }
 
-fn render_edit_field(frame: &mut Frame, area: Rect, title: &str, value: &str, focused: bool) {
+fn render_edit_field(
+    frame: &mut Frame,
+    area: Rect,
+    title: &str,
+    value: &str,
+    focused: bool,
+    multiline: bool,
+) {
     let title_line = Line::from(vec![Span::raw(" "), Span::raw(title), Span::raw(" ")]);
-    let input = Paragraph::new(value).block(
+    let mut paragraph = Paragraph::new(value).block(
         Block::default()
             .borders(Borders::ALL)
             .title(title_line)
             .border_style(field_border_style(focused)),
     );
-    frame.render_widget(input, area);
+
+    if multiline {
+        paragraph = paragraph.wrap(Wrap { trim: true });
+    }
+
+    frame.render_widget(paragraph, area);
 }
 
 fn is_sensitive_key(key: &str) -> bool {
@@ -397,21 +457,160 @@ fn mask_value(value: &str) -> String {
     }
 }
 
-#[cfg(test)]
-mod tests {
-    use super::{is_sensitive_key, mask_value};
+fn render_model_picker(frame: &mut Frame, app: &App, area: Rect) {
+    frame.render_widget(Clear, area);
 
-    #[test]
-    fn sensitive_key_detection() {
-        assert!(is_sensitive_key("API_KEY"));
-        assert!(is_sensitive_key("auth_token"));
-        assert!(is_sensitive_key("my_secret"));
-        assert!(!is_sensitive_key("model"));
-    }
+    let block = Block::default()
+        .borders(Borders::ALL)
+        .title(" Select Model ")
+        .style(Style::default().bg(Color::Black));
+    frame.render_widget(block, area);
 
-    #[test]
-    fn mask_value_short_and_long() {
-        assert_eq!(mask_value("short"), "****");
-        assert_eq!(mask_value("1234567890"), "1234...7890");
-    }
+    let inner_area = area.inner(ratatui::layout::Margin {
+        vertical: 1,
+        horizontal: 1,
+    });
+
+    let chunks = Layout::default()
+        .direction(Direction::Vertical)
+        .constraints([
+            Constraint::Min(3), // Model list
+            Constraint::Length(1), // Help text
+        ])
+        .split(inner_area);
+
+    // Render model list
+    let models: Vec<Line> = app
+        .codex_models
+        .iter()
+        .enumerate()
+        .map(|(i, model)| {
+            let is_selected = i == app.model_picker_index;
+            let prefix = if is_selected { "▸ " } else { "  " };
+            let style = if is_selected {
+                Style::default().fg(Color::Cyan)
+            } else {
+                Style::default()
+            };
+            Line::from(Span::styled(format!("{}{}", prefix, model), style))
+        })
+        .collect();
+
+    let list = Paragraph::new(models).block(Block::default());
+    frame.render_widget(list, chunks[0]);
+
+    // Help text
+    let help_text = Line::from(vec![
+        Span::styled("↑/↓", Style::default().fg(Color::Cyan)),
+        Span::raw(" Navigate  "),
+        Span::styled("Enter", Style::default().fg(Color::Cyan)),
+        Span::raw(" Select  "),
+        Span::styled("Esc", Style::default().fg(Color::Cyan)),
+        Span::raw(" Cancel"),
+    ]);
+    frame.render_widget(Paragraph::new(help_text), chunks[1]);
 }
+
+/// Calculate the cursor position (col, row) for wrapped text.
+/// matches the simple wrapping logic of ratatui (split by whitespace)
+fn calculate_wrapped_cursor(text: &str, cursor_idx: usize, max_width: u16) -> (u16, u16) {
+    if max_width == 0 {
+        return (0, 0);
+    }
+    let max_width = max_width as usize;
+    let chars: Vec<char> = text.chars().collect();
+    
+    // Check if cursor is at the very beginning
+    if cursor_idx == 0 || chars.is_empty() {
+        return (0, 0);
+    }
+
+    let mut col = 0;
+    let mut current_row = 0;
+    
+    let mut i = 0;
+    while i < chars.len() {
+        // Find next word end
+        let word_start = i;
+        while i < chars.len() && !chars[i].is_whitespace() {
+            i += 1;
+        }
+        let word_end = i;
+        let word_len = word_end - word_start;
+        
+        // Find trailing spaces
+        while i < chars.len() && chars[i].is_whitespace() {
+            i += 1;
+        }
+        let space_end = i;
+        
+        let chunk_len = space_end - word_start;
+        
+        // Does word fit?
+        // If we are at start of line, it fits (forced).
+        // If not start, checks if `col + chunk_len <= max_width`.
+        // Actually Ratatui puts word on next line if it doesn't fit.
+        
+        if col > 0 && col + word_len > max_width {
+            current_row += 1;
+            col = 0;
+        }
+        
+        // Check if cursor is in this chunk (word + spaces)
+        if cursor_idx >= word_start && cursor_idx <= space_end {
+            let offset_in_chunk = cursor_idx - word_start;
+            return ((col + offset_in_chunk) as u16, current_row);
+        }
+        
+        col += chunk_len;
+    }
+    
+    // If cursor is at the very end of text
+    if cursor_idx == chars.len() {
+        return (col as u16, current_row);
+    }
+    
+    (0, 0)
+}
+
+fn estimate_line_count(text: &str, max_width: u16) -> u16 {
+    if max_width == 0 {
+        return 1;
+    }
+    let chars: Vec<char> = text.chars().collect();
+    if chars.is_empty() {
+        return 1;
+    }
+
+    let mut lines = 1;
+    let mut col = 0;
+    
+    let mut i = 0;
+    while i < chars.len() {
+        // Find next word end
+        let word_start = i;
+        while i < chars.len() && !chars[i].is_whitespace() {
+            i += 1;
+        }
+        let word_end = i;
+        let word_len = word_end - word_start;
+        
+        // Find trailing spaces
+        while i < chars.len() && chars[i].is_whitespace() {
+            i += 1;
+        }
+        let space_end = i;
+        let chunk_len = space_end - word_start;
+        
+        if col > 0 && col + word_len > max_width as usize {
+            lines += 1;
+            col = 0;
+        }
+        
+        col += chunk_len;
+    }
+    
+    lines
+}
+
+

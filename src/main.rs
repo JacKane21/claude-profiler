@@ -1,6 +1,8 @@
 mod app;
+mod codex_instructions;
 mod config;
 mod launcher;
+mod openai_oauth;
 mod proxy;
 mod tui;
 mod ui;
@@ -98,7 +100,13 @@ fn run_app(terminal: &mut tui::Tui, app: &mut App) -> Result<Option<Profile>> {
                     KeyCode::Char('?') => Some(Action::ShowHelp),
                     KeyCode::Char('e') => Some(Action::EditProfile),
                     KeyCode::Char('n') => Some(Action::CreateProfile),
-                    KeyCode::Char('r') => Some(Action::ResetProfile),
+                    KeyCode::Char('r') => {
+                        if app.is_selected_profile_codex() {
+                            Some(Action::ResetOAuth)
+                        } else {
+                            Some(Action::ResetProfile)
+                        }
+                    }
                     KeyCode::Char('R') => Some(Action::ResetAll),
                     KeyCode::Char('d') => Some(Action::DeleteProfile),
                     _ => None,
@@ -109,7 +117,20 @@ fn run_app(terminal: &mut tui::Tui, app: &mut App) -> Result<Option<Profile>> {
                     is_creating,
                 } => match key.code {
                     KeyCode::Esc => Some(Action::CancelEdit),
-                    KeyCode::Enter => Some(Action::SaveEdit),
+                    KeyCode::Enter => {
+                        // For Codex profiles, open model picker on model fields
+                        let is_model_field = matches!(
+                            focused_field,
+                            EDIT_FIELD_HAIKU | EDIT_FIELD_SONNET | EDIT_FIELD_OPUS
+                        );
+                        if is_model_field && app.is_codex_profile() && !app.codex_models.is_empty()
+                        {
+                            app.open_model_picker(focused_field, is_creating);
+                            None
+                        } else {
+                            Some(Action::SaveEdit)
+                        }
+                    }
                     KeyCode::Tab | KeyCode::Down => {
                         app.mode = AppMode::EditProfile {
                             focused_field: (focused_field + 1) % EDIT_FIELD_COUNT,
@@ -138,6 +159,36 @@ fn run_app(terminal: &mut tui::Tui, app: &mut App) -> Result<Option<Profile>> {
                         None
                     }
                 },
+                AppMode::ModelPicker {
+                    target_field,
+                    is_creating,
+                } => match key.code {
+                    KeyCode::Esc => {
+                        app.cancel_model_picker(target_field, is_creating);
+                        None
+                    }
+                    KeyCode::Enter => {
+                        app.select_model_from_picker(target_field, is_creating);
+                        None
+                    }
+                    KeyCode::Up | KeyCode::Char('k') => {
+                        if app.model_picker_index > 0 {
+                            app.model_picker_index -= 1;
+                        } else {
+                            app.model_picker_index = app.codex_models.len().saturating_sub(1);
+                        }
+                        None
+                    }
+                    KeyCode::Down | KeyCode::Char('j') => {
+                        if app.model_picker_index < app.codex_models.len().saturating_sub(1) {
+                            app.model_picker_index += 1;
+                        } else {
+                            app.model_picker_index = 0;
+                        }
+                        None
+                    }
+                    _ => None,
+                },
             };
 
             if let Some(action) = action {
@@ -156,15 +207,16 @@ fn run_app(terminal: &mut tui::Tui, app: &mut App) -> Result<Option<Profile>> {
 }
 
 fn handle_edit_input(app: &mut App, focused_field: usize, key: event::KeyEvent) {
+    let event = Event::Key(key);
     match focused_field {
-        EDIT_FIELD_NAME => app.name_input.handle_event(&Event::Key(key)),
-        EDIT_FIELD_DESCRIPTION => app.description_input.handle_event(&Event::Key(key)),
-        EDIT_FIELD_API_KEY => app.api_key_input.handle_event(&Event::Key(key)),
-        EDIT_FIELD_URL => app.url_input.handle_event(&Event::Key(key)),
-        EDIT_FIELD_PROXY_URL => app.proxy_url_input.handle_event(&Event::Key(key)),
-        EDIT_FIELD_HAIKU => app.haiku_model_input.handle_event(&Event::Key(key)),
-        EDIT_FIELD_SONNET => app.sonnet_model_input.handle_event(&Event::Key(key)),
-        EDIT_FIELD_OPUS => app.opus_model_input.handle_event(&Event::Key(key)),
-        _ => None,
-    };
+        EDIT_FIELD_NAME => { app.name_input.handle_event(&event); }
+        EDIT_FIELD_DESCRIPTION => { app.description_input.handle_event(&event); }
+        EDIT_FIELD_API_KEY => { app.api_key_input.handle_event(&event); }
+        EDIT_FIELD_URL => { app.url_input.handle_event(&event); }
+        EDIT_FIELD_PROXY_URL => { app.proxy_url_input.handle_event(&event); }
+        EDIT_FIELD_HAIKU => { app.haiku_model_input.handle_event(&event); }
+        EDIT_FIELD_SONNET => { app.sonnet_model_input.handle_event(&event); }
+        EDIT_FIELD_OPUS => { app.opus_model_input.handle_event(&event); }
+        _ => {}
+    }
 }

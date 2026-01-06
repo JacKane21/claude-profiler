@@ -1,36 +1,45 @@
+use std::collections::HashMap;
 use std::io::{self, Write};
 use std::process::Command;
 use std::time::Duration;
 
 use anyhow::Result;
 
-use crate::config::{ENV_BASE_URL, ENV_MODEL, ENV_PROXY_TARGET_URL, ENV_SMALL_FAST_MODEL, Profile};
+use crate::config::{
+    ENV_AUTH_TOKEN, ENV_BASE_URL, ENV_MODEL, ENV_OPENAI_OAUTH, ENV_PROXY_TARGET_URL,
+    ENV_SMALL_FAST_MODEL, Profile,
+};
+use crate::openai_oauth;
 use crate::proxy;
 
 /// Spinner characters for visual feedback
 const SPINNER_CHARS: [char; 10] = ['⠋', '⠙', '⠹', '⠸', '⠼', '⠴', '⠦', '⠧', '⠇', '⠏'];
 
+/// Timeout for proxy startup
+const PROXY_STARTUP_TIMEOUT_SECS: u64 = 10;
+
+/// Get non-empty env var value from a map
+fn get_non_empty_env(map: &HashMap<String, String>, key: &str) -> Option<String> {
+    map.get(key).cloned().filter(|v| !v.trim().is_empty())
+}
+
 /// Launch Claude Code with the specified profile's environment variables.
 /// We spawn a child process to run Claude, then unload models after it exits.
 pub fn exec_claude(profile: &Profile) -> Result<()> {
-    let proxy_target_url = profile
-        .env
-        .get(ENV_PROXY_TARGET_URL)
-        .cloned()
-        .filter(|url| !url.trim().is_empty());
+    let mut resolved_env = profile.env.clone();
+
+    if openai_oauth::openai_oauth_enabled(resolved_env.get(ENV_OPENAI_OAUTH)) {
+        let rt = tokio::runtime::Runtime::new()?;
+        let access_token = rt.block_on(openai_oauth::ensure_access_token_interactive())?;
+        resolved_env.insert(ENV_AUTH_TOKEN.to_string(), access_token);
+    }
+
+    let proxy_target_url = get_non_empty_env(&resolved_env, ENV_PROXY_TARGET_URL);
     let needs_proxy = proxy_target_url.is_some();
 
     if let Some(proxy_target_url) = proxy_target_url {
-        let model_override = profile
-            .env
-            .get(ENV_MODEL)
-            .cloned()
-            .filter(|model| !model.trim().is_empty());
-        let auxiliary_model = profile
-            .env
-            .get(ENV_SMALL_FAST_MODEL)
-            .cloned()
-            .filter(|model| !model.trim().is_empty());
+        let model_override = get_non_empty_env(&resolved_env, ENV_MODEL);
+        let auxiliary_model = get_non_empty_env(&resolved_env, ENV_SMALL_FAST_MODEL);
 
         // Start proxy in a background thread (not fork - fork causes issues with reqwest/TLS)
         std::thread::spawn(move || {
@@ -48,7 +57,7 @@ pub fn exec_claude(profile: &Profile) -> Result<()> {
         print!("Starting proxy ");
         io::stdout().flush()?;
 
-        let timeout = Duration::from_secs(10);
+        let timeout = Duration::from_secs(PROXY_STARTUP_TIMEOUT_SECS);
         let start = std::time::Instant::now();
         let mut spinner_idx = 0;
 
@@ -74,15 +83,15 @@ pub fn exec_claude(profile: &Profile) -> Result<()> {
 
         if start.elapsed() >= timeout {
             println!();
-            anyhow::bail!("Proxy did not start within 10 seconds");
+            anyhow::bail!("Proxy did not start within {} seconds", PROXY_STARTUP_TIMEOUT_SECS);
         }
     }
 
     let mut cmd = Command::new("claude");
 
     // Set all environment variables from the profile
-    for (key, value) in &profile.env {
-        if key == ENV_PROXY_TARGET_URL {
+    for (key, value) in &resolved_env {
+        if key == ENV_PROXY_TARGET_URL || key == ENV_OPENAI_OAUTH {
             continue;
         }
         cmd.env(key, value);

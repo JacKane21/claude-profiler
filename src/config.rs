@@ -14,6 +14,7 @@ pub const ENV_SMALL_FAST_MODEL: &str = "ANTHROPIC_SMALL_FAST_MODEL";
 pub const ENV_DISABLE_NONESSENTIAL_TRAFFIC: &str = "CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC";
 pub const ENV_API_TIMEOUT_MS: &str = "API_TIMEOUT_MS";
 pub const ENV_PROXY_TARGET_URL: &str = "PROXY_TARGET_URL";
+pub const ENV_OPENAI_OAUTH: &str = "OPENAI_OAUTH";
 
 /// A single profile configuration
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -177,15 +178,35 @@ impl Config {
                             "https://openrouter.ai/api".to_string(),
                         ),
                         (
-                            ENV_MODEL.to_string(),
+                            ENV_DEFAULT_HAIKU_MODEL.to_string(),
+                            "google/gemini-3-flash-preview".to_string(),
+                        ),
+                        (
+                            ENV_DEFAULT_SONNET_MODEL.to_string(),
+                            "google/gemini-3-flash-preview".to_string(),
+                        ),
+                        (
+                            ENV_DEFAULT_OPUS_MODEL.to_string(),
                             "google/gemini-3-flash-preview".to_string(),
                         ),
                     ]),
                 },
                 Profile {
+                    name: "OpenAI Codex OAuth".to_string(),
+                    description: "OpenAI Codex via ChatGPT OAuth (sign-in on first use)".to_string(),
+                    env: HashMap::from([
+                        (ENV_OPENAI_OAUTH.to_string(), "1".to_string()),
+                        (
+                            ENV_PROXY_TARGET_URL.to_string(),
+                            "https://chatgpt.com/backend-api/codex/responses".to_string(),
+                        ),
+                        (ENV_MODEL.to_string(), "gpt-5.2-codex-medium".to_string()),
+                    ]),
+                },
+                Profile {
                     name: "custom example".to_string(),
                     description:
-                        "Custom OpenAI-compatible API (requires PROXY_TARGET_URL and model names)"
+                        "Custom OpenAI-compatible API (requires PROXY_TARGET_URL and model names; leave ANTHROPIC_BASE_URL blank for Anthropic compatible endpoints)"
                             .to_string(),
                     env: HashMap::from([
                         (ENV_AUTH_TOKEN.to_string(), "custom".to_string()),
