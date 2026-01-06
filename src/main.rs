@@ -37,32 +37,54 @@ fn main() -> Result<()> {
         return Ok(());
     }
 
-    // Initialize app state
+    // Initialize app state once (persists across TUI sessions)
     let mut app = App::new(config);
 
-    // Initialize terminal
-    let mut terminal = tui::init()?;
+    // Main loop: keep running TUI until user explicitly quits
+    loop {
+        // Initialize terminal for this TUI session
+        let mut terminal = tui::init()?;
 
-    // Main event loop
-    let result = run_app(&mut terminal, &mut app);
+        // Run the TUI event loop
+        let result = run_app(&mut terminal, &mut app);
 
-    // Restore the terminal before potentially launching Claude
-    tui::restore()?;
+        // Restore terminal before launching Claude or continuing
+        tui::restore()?;
 
-    // Handle the result
-    match result {
-        Ok(Some(profile)) => {
-            // User selected a profile - launch Claude Code
-            println!("Launching Claude Code with profile: {}", profile.name);
-            launcher::exec_claude(&profile)?;
-        }
-        Ok(None) => {
-            // User quit without selecting
-            println!("Goodbye!");
-        }
-        Err(e) => {
-            eprintln!("Error: {}", e);
-            return Err(e);
+        // Handle the result
+        match result {
+            Ok(Some(profile)) => {
+                // User selected a profile - launch Claude Code
+                println!("Launching Claude Code with profile: {}", profile.name);
+
+                // Launch Claude and wait for it to exit
+                match launcher::exec_claude(&profile) {
+                    Ok(_) => {
+                        // Claude exited normally, loop back to show TUI again
+                        println!("\nClaude Code exited. Returning to profile selection...");
+                        continue;
+                    }
+                    Err(e) => {
+                        // Claude exited with an error
+                        eprintln!("\nError launching Claude Code: {}", e);
+                        eprintln!("Press Enter to return to profile selection or Ctrl+C to exit");
+
+                        // Wait for user acknowledgment before continuing loop
+                        let _ = std::io::stdin().read_line(&mut String::new());
+                        continue;
+                    }
+                }
+            }
+            Ok(None) => {
+                // User quit without selecting - exit the loop
+                println!("Goodbye!");
+                break;
+            }
+            Err(e) => {
+                // TUI error - restore terminal and exit
+                eprintln!("Error: {}", e);
+                return Err(e);
+            }
         }
     }
 
