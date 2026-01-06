@@ -37,16 +37,23 @@ pub fn exec_claude(profile: &Profile) -> Result<()> {
     let proxy_target_url = get_non_empty_env(&resolved_env, ENV_PROXY_TARGET_URL);
     let needs_proxy = proxy_target_url.is_some();
 
+    // Shutdown channel for graceful proxy termination
+    let mut shutdown_tx: Option<tokio::sync::oneshot::Sender<()>> = None;
+
     if let Some(proxy_target_url) = proxy_target_url {
         let model_override = get_non_empty_env(&resolved_env, ENV_MODEL);
         let auxiliary_model = get_non_empty_env(&resolved_env, ENV_SMALL_FAST_MODEL);
 
-        // Start proxy in a background thread (not fork - fork causes issues with reqwest/TLS)
+        // Create shutdown channel
+        let (tx, rx) = tokio::sync::oneshot::channel();
+        shutdown_tx = Some(tx);
+
+        // Start proxy in a background thread with shutdown support
         std::thread::spawn(move || {
             let rt = tokio::runtime::Runtime::new().expect("Failed to create runtime");
             rt.block_on(async {
                 if let Err(e) =
-                    proxy::start_server(proxy_target_url, model_override, auxiliary_model).await
+                    proxy::start_server(proxy_target_url, model_override, auxiliary_model, Some(rx)).await
                 {
                     eprintln!("Proxy error: {}", e);
                 }
@@ -83,6 +90,10 @@ pub fn exec_claude(profile: &Profile) -> Result<()> {
 
         if start.elapsed() >= timeout {
             println!();
+            // Signal shutdown before bailing
+            if let Some(tx) = shutdown_tx.take() {
+                let _ = tx.send(());
+            }
             anyhow::bail!("Proxy did not start within {} seconds", PROXY_STARTUP_TIMEOUT_SECS);
         }
     }
@@ -103,6 +114,11 @@ pub fn exec_claude(profile: &Profile) -> Result<()> {
 
     // Spawn and wait so we can unload after exit.
     let status = cmd.status()?;
+
+    // Signal proxy to shut down gracefully after Claude exits
+    if let Some(tx) = shutdown_tx {
+        let _ = tx.send(());
+    }
 
     if !status.success() {
         anyhow::bail!("Claude Code exited with status: {}", status);

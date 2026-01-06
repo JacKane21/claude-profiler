@@ -228,6 +228,8 @@ pub struct ResponsesRequest {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub reasoning: Option<ResponseReasoning>,
     #[serde(skip_serializing_if = "Option::is_none")]
+    pub text: Option<ResponseText>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub include: Option<Vec<String>>,
 }
 
@@ -235,6 +237,14 @@ pub struct ResponsesRequest {
 pub struct ResponseReasoning {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub effort: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub summary: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ResponseText {
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub verbosity: Option<String>,
 }
 
 /// Responses input item
@@ -473,11 +483,18 @@ fn stringify_value(value: &Value) -> String {
     }
 }
 
-fn response_text_part(text: &str) -> ResponseInputContentPart {
-    // For Responses *input*, content parts should be `input_text` regardless of role.
-    // `output_text` is used in Responses *output* payloads, and can cause upstream validation errors.
-    ResponseInputContentPart::InputText {
-        text: text.to_string(),
+fn response_text_part_for_role(text: &str, role: &str) -> ResponseInputContentPart {
+    // Codex API requires different content types based on role:
+    // - Assistant messages must use `output_text`
+    // - User/developer messages must use `input_text`
+    if role.eq_ignore_ascii_case("assistant") {
+        ResponseInputContentPart::OutputText {
+            text: text.to_string(),
+        }
+    } else {
+        ResponseInputContentPart::InputText {
+            text: text.to_string(),
+        }
     }
 }
 
@@ -507,6 +524,102 @@ fn map_tool_choice_for_openai(value: &Value) -> Option<Value> {
         }
         _ => None,
     }
+}
+
+fn normalize_call_id_for_codex(
+    call_id: &str,
+    call_id_map: &mut HashMap<String, String>,
+) -> String {
+    if let Some(existing) = call_id_map.get(call_id) {
+        return existing.clone();
+    }
+    let mapped = if call_id.starts_with("fc_") {
+        call_id.to_string()
+    } else {
+        format!("fc_{}", call_id)
+    };
+    call_id_map.insert(call_id.to_string(), mapped.clone());
+    mapped
+}
+
+fn normalize_responses_input_for_codex(input: &mut Vec<ResponseInputItem>) {
+    let mut call_id_map = HashMap::new();
+    for item in input.iter_mut() {
+        match item {
+            ResponseInputItem::Message { role, content } => {
+                let normalized_role = role.trim().to_ascii_lowercase();
+                if !normalized_role.is_empty() {
+                    *role = normalized_role;
+                }
+                let is_assistant = role == "assistant";
+                for part in content.iter_mut() {
+                    match part {
+                        ResponseInputContentPart::InputText { text } if is_assistant => {
+                            *part = ResponseInputContentPart::OutputText { text: text.clone() };
+                        }
+                        ResponseInputContentPart::OutputText { text } if !is_assistant => {
+                            *part = ResponseInputContentPart::InputText { text: text.clone() };
+                        }
+                        _ => {}
+                    }
+                }
+                if is_assistant {
+                    content.retain(|part| {
+                        !matches!(part, ResponseInputContentPart::InputImage { .. })
+                    });
+                }
+            }
+            ResponseInputItem::FunctionCall {
+                id, call_id, ..
+            } => {
+                let mapped = normalize_call_id_for_codex(call_id, &mut call_id_map);
+                *id = Some(mapped.clone());
+                *call_id = mapped;
+            }
+            ResponseInputItem::FunctionCallOutput { call_id, .. } => {
+                let mapped = normalize_call_id_for_codex(call_id, &mut call_id_map);
+                *call_id = mapped;
+            }
+        }
+    }
+}
+
+fn tool_output_to_message(call_id: &str, output: &str) -> ResponseInputItem {
+    let mut text = output.to_string();
+    if text.len() > 16000 {
+        text.truncate(16000);
+        text.push_str("\n...[truncated]");
+    }
+    ResponseInputItem::Message {
+        role: "assistant".to_string(),
+        content: vec![ResponseInputContentPart::OutputText {
+            text: format!("[Previous tool result; call_id={}]: {}", call_id, text),
+        }],
+    }
+}
+
+fn normalize_orphaned_tool_outputs_for_codex(input: &mut Vec<ResponseInputItem>) {
+    let mut call_ids = HashSet::new();
+    for item in input.iter() {
+        if let ResponseInputItem::FunctionCall { call_id, .. } = item {
+            call_ids.insert(call_id.clone());
+        }
+    }
+
+    let mut normalized = Vec::with_capacity(input.len());
+    for item in input.drain(..) {
+        match item {
+            ResponseInputItem::FunctionCallOutput { call_id, output } => {
+                if call_ids.contains(&call_id) {
+                    normalized.push(ResponseInputItem::FunctionCallOutput { call_id, output });
+                } else {
+                    normalized.push(tool_output_to_message(&call_id, &output));
+                }
+            }
+            other => normalized.push(other),
+        }
+    }
+    *input = normalized;
 }
 
 fn base_anthropic_response(
@@ -622,6 +735,7 @@ pub fn anthropic_to_responses(req: &AnthropicRequest, target_model: &str) -> Res
         // Model suffix specifies reasoning effort (e.g., gpt-5.1-codex-high)
         Some(ResponseReasoning {
             effort: Some(effort.to_string()),
+            summary: None,
         })
     } else {
         // Fall back to thinking config mapping
@@ -635,6 +749,7 @@ pub fn anthropic_to_responses(req: &AnthropicRequest, target_model: &str) -> Res
                 };
                 Some(ResponseReasoning {
                     effort: Some(effort.to_string()),
+                    summary: None,
                 })
             }
             _ => None,
@@ -656,6 +771,7 @@ pub fn anthropic_to_responses(req: &AnthropicRequest, target_model: &str) -> Res
         tools,
         tool_choice: req.tool_choice.as_ref().and_then(map_tool_choice_for_openai),
         reasoning,
+        text: None,
         include: None,
     }
 }
@@ -665,7 +781,7 @@ fn convert_anthropic_message(msg: &AnthropicMessage) -> Vec<ResponseInputItem> {
     match &msg.content {
         AnthropicContent::Text(text) => vec![ResponseInputItem::Message {
             role: msg.role.clone(),
-            content: vec![response_text_part(text)],
+            content: vec![response_text_part_for_role(text, &msg.role)],
         }],
         AnthropicContent::Blocks(blocks) => {
             let mut items = Vec::new();
@@ -686,7 +802,7 @@ fn convert_anthropic_message(msg: &AnthropicMessage) -> Vec<ResponseInputItem> {
             for block in blocks {
                 match block {
                     ContentBlock::Text { text } => {
-                        content_parts.push(response_text_part(text));
+                        content_parts.push(response_text_part_for_role(text, &msg.role));
                     }
                     ContentBlock::Image { source } => {
                         let data_url = format!("data:{};base64,{}", source.media_type, source.data);
@@ -699,7 +815,7 @@ fn convert_anthropic_message(msg: &AnthropicMessage) -> Vec<ResponseInputItem> {
                     ContentBlock::ToolUse { id, name, input } => {
                         flush_message(&mut items, &mut content_parts);
                         items.push(ResponseInputItem::FunctionCall {
-                            id: Some(id.clone()),
+                            id: None,
                             call_id: id.clone(),
                             name: name.clone(),
                             arguments: serde_json::to_string(input).unwrap_or_default(),
@@ -1201,19 +1317,13 @@ fn build_upstream_urls(target_url: &str) -> (String, String, String, UpstreamMod
     )
 }
 
-/// Start the proxy server
+/// Start the proxy server with graceful shutdown support
 pub async fn start_server(
     proxy_target_url: String,
     model_override: Option<String>,
     auxiliary_model: Option<String>,
+    shutdown_rx: Option<tokio::sync::oneshot::Receiver<()>>,
 ) -> Result<()> {
-    if let Some(ref aux) = auxiliary_model {
-        eprintln!(
-            "Proxy: Using auxiliary model '{}' for lightweight requests",
-            aux
-        );
-    }
-
     let (responses_url, chat_completions_url, completions_url, mode) =
         build_upstream_urls(&proxy_target_url);
 
@@ -1239,7 +1349,15 @@ pub async fn start_server(
     let addr = format!("127.0.0.1:{}", PROXY_PORT);
     let listener = tokio::net::TcpListener::bind(&addr).await?;
 
-    axum::serve(listener, app).await?;
+    if let Some(shutdown_rx) = shutdown_rx {
+        axum::serve(listener, app)
+            .with_graceful_shutdown(async move {
+                let _ = shutdown_rx.await;
+            })
+            .await?;
+    } else {
+        axum::serve(listener, app).await?;
+    }
 
     Ok(())
 }
@@ -1249,7 +1367,7 @@ async fn health_handler() -> &'static str {
     "OK"
 }
 
-/// Fallback handler to log unmatched routes
+/// Fallback handler for unmatched routes
 async fn fallback_handler(req: axum::extract::Request) -> Response {
     let uri = req.uri().clone();
 
@@ -1512,7 +1630,8 @@ async fn handle_responses_request(
     is_streaming: bool,
     auth_header: Option<String>,
 ) -> Result<Response, UpstreamError> {
-    if is_chatgpt_codex_backend(&state.responses_url) {
+    let is_codex_backend = is_chatgpt_codex_backend(&state.responses_url);
+    if is_codex_backend {
         request.store = Some(false);
         request.stream = Some(true);
         request.include = Some(vec!["reasoning.encrypted_content".to_string()]);
@@ -1523,7 +1642,6 @@ async fn handle_responses_request(
                 request.instructions = Some(instructions);
             }
             Err(e) => {
-                eprintln!("[proxy] Failed to fetch Codex instructions: {}", e);
                 return Err(UpstreamError {
                     status: StatusCode::INTERNAL_SERVER_ERROR,
                     body: format!("Failed to fetch Codex instructions: {}", e),
@@ -1539,6 +1657,30 @@ async fn handle_responses_request(
             }],
         };
         request.input.insert(0, bridge_message);
+
+        normalize_responses_input_for_codex(&mut request.input);
+        normalize_orphaned_tool_outputs_for_codex(&mut request.input);
+
+        let summary = match request.reasoning.as_mut() {
+            Some(reasoning) => {
+                if reasoning.summary.is_none() {
+                    reasoning.summary = Some("auto".to_string());
+                }
+                None
+            }
+            None => Some(ResponseReasoning {
+                effort: None,
+                summary: Some("auto".to_string()),
+            }),
+        };
+        if let Some(reasoning) = summary {
+            request.reasoning = Some(reasoning);
+        }
+
+        let text = request.text.get_or_insert(ResponseText { verbosity: None });
+        if text.verbosity.is_none() {
+            text.verbosity = Some("medium".to_string());
+        }
 
         // Remove unsupported parameters for Codex API
         // The Codex API only supports: model, store, stream, instructions, input, tools, reasoning, text, include
@@ -2393,11 +2535,12 @@ impl StreamState {
     }
 
     fn capture_tool_metadata(&mut self, output_index: u32, item: &Value) {
+        // Prefer "id" (fc_xxx format) over "call_id" (call_xxx format) for OpenAI Codex compatibility
         if let Some(id) = item
-            .get("call_id")
+            .get("id")
             .and_then(|v| v.as_str())
             .or_else(|| item.get("item_id").and_then(|v| v.as_str()))
-            .or_else(|| item.get("id").and_then(|v| v.as_str()))
+            .or_else(|| item.get("call_id").and_then(|v| v.as_str()))
         {
             self.tool_call_ids
                 .entry(output_index)

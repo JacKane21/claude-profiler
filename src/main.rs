@@ -40,16 +40,13 @@ fn main() -> Result<()> {
     // Initialize app state once (persists across TUI sessions)
     let mut app = App::new(config);
 
+    // Initialize terminal once (reused across all TUI sessions)
+    let mut terminal = tui::init()?;
+
     // Main loop: keep running TUI until user explicitly quits
     loop {
-        // Initialize terminal for this TUI session
-        let mut terminal = tui::init()?;
-
         // Run the TUI event loop
         let result = run_app(&mut terminal, &mut app);
-
-        // Restore terminal before launching Claude or continuing
-        tui::restore()?;
 
         // Handle the result
         match result {
@@ -57,31 +54,38 @@ fn main() -> Result<()> {
                 // User selected a profile - launch Claude Code
                 println!("Launching Claude Code with profile: {}", profile.name);
 
+                // Restore terminal before launching Claude
+                tui::restore()?;
+
                 // Launch Claude and wait for it to exit
-                match launcher::exec_claude(&profile) {
+                let exit_result = launcher::exec_claude(&profile);
+
+                // Reinitialize terminal for TUI
+                terminal = tui::init()?;
+
+                match exit_result {
                     Ok(_) => {
                         // Claude exited normally, loop back to show TUI again
-                        println!("\nClaude Code exited. Returning to profile selection...");
                         continue;
                     }
                     Err(e) => {
                         // Claude exited with an error
                         eprintln!("\nError launching Claude Code: {}", e);
                         eprintln!("Press Enter to return to profile selection or Ctrl+C to exit");
-
-                        // Wait for user acknowledgment before continuing loop
                         let _ = std::io::stdin().read_line(&mut String::new());
                         continue;
                     }
                 }
             }
             Ok(None) => {
-                // User quit without selecting - exit the loop
+                // User quit without selecting - restore terminal and exit
+                tui::restore()?;
                 println!("Goodbye!");
                 break;
             }
             Err(e) => {
                 // TUI error - restore terminal and exit
+                let _ = tui::restore();
                 eprintln!("Error: {}", e);
                 return Err(e);
             }
@@ -91,7 +95,7 @@ fn main() -> Result<()> {
     Ok(())
 }
 
-const UI_POLL_GRANULARITY: Duration = Duration::from_millis(250);
+const UI_POLL_GRANULARITY: Duration = Duration::from_millis(50);
 
 fn run_app(terminal: &mut tui::Tui, app: &mut App) -> Result<Option<Profile>> {
     loop {
