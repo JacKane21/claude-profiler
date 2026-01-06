@@ -143,8 +143,6 @@ impl Config {
                             ENV_BASE_URL.to_string(),
                             "https://api.minimax.io/anthropic".to_string(),
                         ),
-                        (ENV_MODEL.to_string(), "MiniMax-M2.1".to_string()),
-                        (ENV_SMALL_FAST_MODEL.to_string(), "MiniMax-M2.1".to_string()),
                         (
                             ENV_DEFAULT_HAIKU_MODEL.to_string(),
                             "MiniMax-M2.1".to_string(),
