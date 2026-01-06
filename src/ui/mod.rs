@@ -28,17 +28,19 @@ pub fn render(frame: &mut Frame, app: &mut App) {
     let chunks = Layout::default()
         .direction(Direction::Vertical)
         .constraints([
-            Constraint::Length(title_height), // Title
-            Constraint::Min(4),               // Profile list (reduced from 8 to allow more room)
-            Constraint::Length(8), // Details panel (slightly increased to ensure it fits its title/content)
-            Constraint::Length(2), // Footer
+            Constraint::Length(5),               // Top spacing
+            Constraint::Length(title_height),    // Title
+            Constraint::Length(1),               // Separator
+            Constraint::Min(4),                  // Profile list
+            Constraint::Length(8),               // Details panel
+            Constraint::Length(2),               // Footer
         ])
         .split(frame.area());
 
-    render_title(frame, chunks[0]);
-    render_profile_list(frame, app, chunks[1]);
-    render_details(frame, app, chunks[2]);
-    render_footer(frame, chunks[3], app);
+    render_title(frame, chunks[1]);
+    render_profile_list(frame, app, chunks[3]);
+    render_details(frame, app, chunks[4]);
+    render_footer(frame, chunks[5], app);
 
     // Overlay help if in help mode
     if app.mode == AppMode::Help {
